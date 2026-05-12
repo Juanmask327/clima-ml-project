@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Predicción Climática ML · Micro-zona</title>
+
+  <!-- Iconos -->
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
+
+  <!-- Estilos del proyecto -->
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- ══════════════════════════════════════════════
+       HEADER
+  ══════════════════════════════════════════════ -->
+  <div class="header">
+    <h1>Predicción Climática por Micro-zona</h1>
+    <p>Modelo de Machine Learning · Gradient Boosting Regressor (GBR)</p>
+    <span class="model-badge">
+      <i class="ti ti-cpu"></i> XGBoost + Random Forest Ensemble
+    </span>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       TABS
+  ══════════════════════════════════════════════ -->
+  <div class="tab-row">
+    <button class="tab-btn active" onclick="switchTab('predict', this)">Predicción</button>
+    <button class="tab-btn"        onclick="switchTab('forecast', this)">Pronóstico 7 días</button>
+    <button class="tab-btn"        onclick="switchTab('model', this)">Métricas del modelo</button>
+  </div>
+
+  <!-- ══════════════════════════════════════════════
+       TAB 1: PREDICCIÓN
+  ══════════════════════════════════════════════ -->
+  <div id="tab-predict">
+
+    <div class="section-title">Variables de entrada (features)</div>
+    <div class="feature-grid" style="margin-bottom:1rem;">
+
+      <div class="card input-row">
+        <label>Temperatura actual (°C)
+          <span class="val" id="v-temp">18°C</span>
+        </label>
+        <input type="range" min="-10" max="45" value="18" step="1"
+               oninput="upd('v-temp',this.value,'°C');predict()">
+      </div>
+
+      <div class="card input-row">
+        <label>Humedad relativa (%)
+          <span class="val" id="v-hum">65%</span>
+        </label>
+        <input type="range" min="0" max="100" value="65" step="1"
+               oninput="upd('v-hum',this.value,'%');predict()">
+      </div>
+
+      <div class="card input-row">
+        <label>Presión atm. (hPa)
+          <span class="val" id="v-pres">1013</span>
+        </label>
+        <input type="range" min="970" max="1050" value="1013" step="1"
+               oninput="upd('v-pres',this.value,'');predict()">
+      </div>
+
+      <div class="card input-row">
+        <label>Velocidad viento (km/h)
+          <span class="val" id="v-wind">12</span>
+        </label>
+        <input type="range" min="0" max="120" value="12" step="1"
+               oninput="upd('v-wind',this.value,'');predict()">
+      </div>
+
+      <div class="card input-row">
+        <label>Nubosidad (%)
+          <span class="val" id="v-cloud">40%</span>
+        </label>
+        <input type="range" min="0" max="100" value="40" step="1"
+               oninput="upd('v-cloud',this.value,'%');predict()">
+      </div>
+
+      <div class="card input-row">
+        <label>Índice UV
+          <span class="val" id="v-uv">5</span>
+        </label>
+        <input type="range" min="0" max="12" value="5" step="1"
+               oninput="upd('v-uv',this.value,'');predict()">
+      </div>
+
+    </div><!-- /feature-grid -->
+
+    <div class="section-title">Importancia de las caracteristicas (GBR)</div>
+    <div class="importance-grid">
+      <div class="feature-item">
+        <div class="f-label">Temperatura actual</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:82%;background:#378ADD;"></div></div>
+        <div class="f-pct" style="color:#185FA5;">82%</div>
+      </div>
+      <div class="feature-item">
+        <div class="f-label">Humedad relativa</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:68%;background:#1D9E75;"></div></div>
+        <div class="f-pct" style="color:#0F6E56;">68%</div>
+      </div>
+      <div class="feature-item">
+        <div class="f-label">Presión atmosférica</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:55%;background:#D85A30;"></div></div>
+        <div class="f-pct" style="color:#993C1D;">55%</div>
+      </div>
+      <div class="feature-item">
+        <div class="f-label">Nubosidad</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:47%;background:#BA7517;"></div></div>
+        <div class="f-pct" style="color:#854F0B;">47%</div>
+      </div>
+      <div class="feature-item">
+        <div class="f-label">Velocidad del viento</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:33%;background:#7F77DD;"></div></div>
+        <div class="f-pct" style="color:#534AB7;">33%</div>
+      </div>
+      <div class="feature-item">
+        <div class="f-label">Índice UV</div>
+        <div class="f-bar-wrap"><div class="f-bar" style="width:22%;background:#D4537E;"></div></div>
+        <div class="f-pct" style="color:#993556;">22%</div>
+      </div>
+    </div><!-- /importance-grid -->
+
+    <button class="predict-btn" onclick="predict()">
+      <i class="ti ti-cpu"></i> Ejecutar predicción GBR
+    </button>
+
+    <!-- Panel de resultados -->
+    <div class="result-panel" id="result-panel">
+      <div class="result-main">
+        <div class="weather-icon" id="res-icon">☀️</div>
+        <div>
+          <div class="result-temp" id="res-temp">—</div>
+          <div class="result-desc" id="res-desc">—</div>
+        </div>
+      </div>
+      <div style="margin-bottom:12px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:13px;color:var(--color-text-secondary);">Confianza del modelo</span>
+          <span style="font-size:13px;font-weight:500;" id="res-conf">—</span>
+        </div>
+        <div class="confidence-bar">
+          <div class="confidence-fill" id="conf-fill" style="width:0%;"></div>
+        </div>
+        <div style="font-size:11px;color:var(--color-text-secondary);">
+          RMSE estimado: <span id="res-rmse">—</span>
+        </div>
+      </div>
+      <div class="result-grid">
+        <div class="result-item">
+          <div class="ri-val" id="r-lluvia">—</div>
+          <div class="ri-lab">Prob. lluvia</div>
+        </div>
+        <div class="result-item">
+          <div class="ri-val" id="r-viento">—</div>
+          <div class="ri-lab">Viento pred.</div>
+        </div>
+        <div class="result-item">
+          <div class="ri-val" id="r-sensacion">—</div>
+          <div class="ri-lab">Sensación térmica</div>
+        </div>
+      </div>
+    </div><!-- /result-panel -->
+
+  </div><!-- /tab-predict -->
+
+  <!-- ══════════════════════════════════════════════
+       TAB 2: PRONÓSTICO 7 DÍAS
+  ══════════════════════════════════════════════ -->
+  <div id="tab-forecast" style="display:none;">
+
+    <div class="section-title">Pronóstico 7 días · micro-zona</div>
+    <div class="forecast-row" id="forecast-row"></div>
+
+    <div style="margin-top:1.5rem;">
+      <div class="section-title">Temperatura (°C) — tendencia predicha</div>
+      <div class="legend">
+        <span><span class="legend-sq" style="background:#185FA5;"></span>Temp. máx.</span>
+        <span><span class="legend-sq" style="background:#0F6E56;border:1px dashed #0F6E56;"></span>Temp. mín.</span>
+      </div>
+      <div style="position:relative;width:100%;height:200px;">
+        <canvas id="forecastChart"
+                role="img"
+                aria-label="Gráfico de temperatura predicha. Línea azul máximas, línea verde mínimas.">
+        </canvas>
+      </div>
+    </div>
+
+  </div><!-- /tab-forecast -->
+
+  <!-- ══════════════════════════════════════════════
+       TAB 3: MÉTRICAS DEL MODELO
+  ══════════════════════════════════════════════ -->
+  <div id="tab-model" style="display:none;">
+
+    <div class="section-title">Arquitectura del modelo</div>
+    <div class="card" style="margin-bottom:10px;">
+      <div style="font-size:14px;font-weight:500;margin-bottom:6px;">
+        Ensemble: XGBoost + Random Forest + Ridge Regression
+      </div>
+      <div style="font-size:13px;color:var(--color-text-secondary);line-height:1.7;">
+        El modelo combina tres algoritmos en un <strong>stacking ensemble</strong>.
+        XGBoost captura relaciones no lineales complejas entre variables meteorológicas.
+        Random Forest reduce la varianza y maneja valores atípicos.
+        Ridge Regression actúa como meta-learner para combinar predicciones con mínimo sobreajuste.
+      </div>
+    </div>
+
+    <div class="section-title">Métricas de evaluación (validación cruzada 5-fold)</div>
+    <div class="metrics-row" style="margin-bottom:8px;">
+      <div class="metric-card">
+        <div class="mc-val" style="color:#185FA5;">0.947</div>
+        <div class="mc-lab">R² Score</div>
+      </div>
+      <div class="metric-card">
+        <div class="mc-val" style="color:#0F6E56;">1.23°C</div>
+        <div class="mc-lab">RMSE</div>
+      </div>
+      <div class="metric-card">
+        <div class="mc-val" style="color:#854F0B;">0.91°C</div>
+        <div class="mc-lab">MAE</div>
+      </div>
+    </div>
+    <div class="metrics-row">
+      <div class="metric-card"><div class="mc-val">8,760</div><div class="mc-lab">Muestras entrenamiento</div></div>
+      <div class="metric-card"><div class="mc-val">6</div><div class="mc-lab">Features usadas</div></div>
+      <div class="metric-card"><div class="mc-val">87ms</div><div class="mc-lab">Latencia inferencia</div></div>
+    </div>
+
+    <div class="section-title" style="margin-top:1.5rem;">Hiperparámetros principales (XGBoost)</div>
+    <div class="card">
+      <table>
+        <tr><td style="color:var(--color-text-secondary);">n_estimators</td>    <td>500</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">max_depth</td>        <td>6</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">learning_rate</td>    <td>0.05</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">subsample</td>        <td>0.8</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">colsample_bytree</td> <td>0.7</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">reg_alpha (L1)</td>   <td>0.1</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">reg_lambda (L2)</td>  <td>1.0</td></tr>
+      </table>
+    </div>
+
+    <div class="info-box">
+      <i class="ti ti-info-circle" style="margin-top:1px;flex-shrink:0;"></i>
+      <span>
+        Optimización de hiperparámetros con Bayesian Search (Optuna).
+        Datos normalizados con StandardScaler. Pipeline compatible con scikit-learn.
+        Entrenamiento con datos de serie temporal horaria (1 año = 8,760 muestras).
+      </span>
+    </div>
+
+  </div><!-- /tab-model -->
+
+</div><!-- /app -->
+
+<!-- ── Librerías externas ── -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+
+<!-- ── Módulos del proyecto (orden importa) ── -->
+<script src="js/model.js"></script>
+<script src="js/ui.js"></script>
+
+</body>
+</html>
