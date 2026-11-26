@@ -20,15 +20,21 @@ El frontend (index.html) consume este endpoint en:
 
 from __future__ import annotations
 
+import sys
 import time
 import joblib
 import numpy as np
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List
+
+# Windows (cp1252/GBK) no puede imprimir símbolos como ✓/⚠ → UTF-8
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 # ─── Ruta del modelo serializado ────────────────────────────
@@ -55,16 +61,16 @@ class WeatherInput(BaseModel):
 
 class PredictionOutput(BaseModel):
     """Resultado de la predicción del modelo GBR Ensemble."""
-    pred_temp:   float  = Field(..., description="Temperatura predicha (°C)")
-    rain_prob:   float  = Field(..., description="Probabilidad de lluvia (0-100)")
-    sensacion:   float  = Field(..., description="Sensación térmica (°C)")
-    wind_pred:   float  = Field(..., description="Viento predicho (km/h)")
-    confidence:  float  = Field(..., description="Confianza del modelo (%)")
-    rmse:        float  = Field(..., description="RMSE estimado (°C)")
+    pred_temp:   float  = Field(..., description="Temperatura predicha por el modelo (°C)")
+    rain_prob:   float  = Field(..., description="Probabilidad de lluvia — heurística auxiliar (0-100)")
+    sensacion:   float  = Field(..., description="Sensación térmica — estimación heurística (°C)")
+    wind_pred:   float  = Field(..., description="Viento estimado — heurística auxiliar (km/h)")
+    confidence:  float  = Field(..., description="Confianza estimada — heurística, no calculada por el modelo (%)")
+    rmse:        float  = Field(..., description="RMSE real de la validación cruzada del modelo (°C)")
     condition:   str    = Field(..., description="Descripción de la condición climática")
     icon:        str    = Field(..., description="Emoji del estado del tiempo")
     model_version: str  = Field(default="1.0.0")
-    timestamp:   str    = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp:   str    = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class ForecastDay(BaseModel):
@@ -89,6 +95,8 @@ class ModelInfo(BaseModel):
     mae:         float
     n_samples:   int
     version:     str
+    feature_importances: dict = Field(default_factory=dict, description="Importancia real por feature (%)")
+    hyperparameters:     dict = Field(default_factory=dict, description="Mejores hiperparámetros (Optuna)")
 
 
 # ============================================================
@@ -103,14 +111,21 @@ def load_model():
             "Ejecuta primero: python model/train_model.py"
         )
     artifact = joblib.load(MODEL_PATH)
-    return artifact['pipeline'], artifact['features'], artifact['metrics']
+    return artifact
 
 # Carga en startup (None si aún no existe)
 try:
-    _pipeline, _features, _metrics = load_model()
+    _artifact  = load_model()
+    _pipeline  = _artifact['pipeline']
+    _features  = _artifact['features']
+    _metrics   = _artifact['metrics']
+    _n_samples = int(_artifact.get('n_samples', 0))
+    _importances = _artifact.get('feature_importances', {}) or {}
+    _xgb_params  = _artifact.get('xgb_params', {}) or {}
     MODEL_LOADED = True
 except Exception as e:
     _pipeline, _features, _metrics = None, None, None
+    _n_samples, _importances, _xgb_params = 0, {}, {}
     MODEL_LOADED = False
     print(f"⚠ Modelo no cargado: {e}")
 
@@ -191,7 +206,7 @@ def health():
     return {
         "status":       "ok" if MODEL_LOADED else "degraded",
         "model_loaded": MODEL_LOADED,
-        "timestamp":    datetime.utcnow().isoformat()
+        "timestamp":    datetime.now(timezone.utc).isoformat()
     }
 
 
@@ -201,10 +216,10 @@ def predict(inp: WeatherInput):
     Ejecuta la predicción climática con el modelo GBR Ensemble.
 
     Recibe las variables meteorológicas de la micro-zona y retorna:
-    - Temperatura predicha (°C)
-    - Probabilidad de lluvia
-    - Sensación térmica
-    - Confianza del modelo y RMSE estimado
+    - Temperatura predicha (°C)      → del modelo ML
+    - RMSE (°C)                      → real, de la validación cruzada
+    - Probabilidad de lluvia, sensación, viento y confianza
+      → estimaciones heurísticas auxiliares (NO salen del modelo)
     """
     t0 = time.perf_counter()
 
@@ -220,7 +235,7 @@ def predict(inp: WeatherInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en predicción: {str(e)}")
 
-    # Calcular variables derivadas
+    # ── Heurísticas auxiliares (no son salida del modelo ML) ──
     pressure_delta = (inp.pres - 1013) / 40
     hum_effect     = (inp.hum  - 50)   / 100
     cloud_effect   = inp.cloud / 100
@@ -230,7 +245,9 @@ def predict(inp: WeatherInput):
     sensacion  = round(pred_temp - wind_chill * 0.5 - hum_effect * 2, 1)
     wind_pred  = round(inp.wind * (1 + (1013 - inp.pres) / 300), 1)
     confidence = max(72, min(97, round(94 - abs(pressure_delta) * 5 - cloud_effect * 8)))
-    rmse       = round(1.8 - confidence / 100, 2)
+
+    # RMSE REAL de la validación cruzada del modelo (no una fórmula)
+    rmse = round(float(_metrics['rmse_mean']), 2)
 
     condition, icon = classify_condition(pred_temp, rain_prob, inp.cloud, inp.wind)
 
@@ -253,30 +270,43 @@ def predict(inp: WeatherInput):
 def forecast(inp: WeatherInput, zona: str = "micro-zona-1"):
     """
     Genera el pronóstico de 7 días para la micro-zona.
-    Aplica el modelo iterativamente con perturbaciones estocásticas
-    controladas que simulan la incertidumbre temporal.
+
+    - Parte de la predicción real del modelo ML (pred_temp).
+    - Aplica variaciones diarias deterministas (sin aleatoriedad
+      no reproducible) y usa los días de la semana reales.
     """
     if not MODEL_LOADED:
         raise HTTPException(status_code=503, detail="Modelo no disponible.")
 
-    days_es = ['Hoy', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom']
-    icons   = ['☀️',  '⛅',  '🌧️', '🌤️', '☀️',  '⛅',  '🌦️']
+    X = build_features(inp)
+    base_temp = float(_pipeline.predict(X)[0])
+
+    days_es  = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+    today    = datetime.now(timezone.utc).date()
+    rng      = np.random.default_rng(42)   # semilla fija → resultados reproducibles
 
     forecast_list = []
     for i in range(7):
+        day_date = today + timedelta(days=i)
+        day_name = 'Hoy' if i == 0 else days_es[day_date.weekday()]
+
+        # Variación diaria suave + ruido pequeño reproducible
         variation = np.sin(i * 0.8) * 3 + np.cos(i * 1.2) * 2
-        hi = round(inp.temp + variation, 1)
-        lo = round(hi - 6 - float(np.random.uniform(0, 3)), 1)
+        hi = round(base_temp + variation, 1)
+        lo = round(hi - 6 - float(rng.uniform(0, 3)), 1)
         rain = max(0, min(100, round(inp.hum * 0.6 + inp.cloud * 0.4 - i * 2)))
 
+        icon = ('🌧️' if rain > 70 else '⛅' if rain > 45 else
+                '☀️' if i % 3 == 0 else '🌤️')
+
         forecast_list.append(ForecastDay(
-            day=days_es[i], icon=icons[i], hi=hi, lo=lo, rain_prob=float(rain)
+            day=day_name, icon=icon, hi=hi, lo=lo, rain_prob=float(rain)
         ))
 
     return ForecastOutput(
         micro_zone=zona,
         forecast=forecast_list,
-        generated_at=datetime.utcnow().isoformat()
+        generated_at=datetime.now(timezone.utc).isoformat()
     )
 
 
@@ -292,9 +322,21 @@ def model_info():
         r2_score=round(_metrics['r2_mean'], 4),
         rmse=round(_metrics['rmse_mean'], 4),
         mae=round(_metrics['mae_mean'], 4),
-        n_samples=8760,
-        version="1.0.0"
+        n_samples=_n_samples if _n_samples else 8760,
+        version="1.0.0",
+        feature_importances=_importances,
+        hyperparameters=_xgb_params,
     )
+
+
+# ============================================================
+#  FRONTEND ESTÁTICO (todo en un solo servidor)
+# ============================================================
+# Disponible en: http://localhost:8000/ui/
+FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / 'frontend'
+if FRONTEND_DIR.exists():
+    app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True),
+              name="frontend")
 
 
 # ============================================================

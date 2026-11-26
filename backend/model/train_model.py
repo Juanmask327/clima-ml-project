@@ -19,6 +19,7 @@ Dependencias:
 ============================================================
 """
 
+import sys
 import numpy as np
 import pandas as pd
 import joblib
@@ -26,11 +27,15 @@ import optuna
 import warnings
 from pathlib import Path
 
+# Windows (cp1252/GBK) no puede imprimir símbolos como ✓/⚠ → UTF-8
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from sklearn.linear_model import Ridge
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import cross_val_score, KFold
+from sklearn.model_selection import cross_val_score, TimeSeriesSplit
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from xgboost import XGBRegressor
 
@@ -131,8 +136,12 @@ def optimize_xgboost(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> dict:
     """
     Busca los mejores hiperparámetros de XGBoost usando
     Bayesian Optimization (TPE Sampler) de Optuna.
+
+    NOTA: se usa TimeSeriesSplit (sin shuffle) porque los datos son
+    una serie temporal horaria; mezclarlos (KFold) introduciría
+    fuga de información entrenando con el futuro.
     """
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    tscv = TimeSeriesSplit(n_splits=5)
 
     def objective(trial):
         params = {
@@ -147,7 +156,8 @@ def optimize_xgboost(X: np.ndarray, y: np.ndarray, n_trials: int = 50) -> dict:
             'verbosity': 0
         }
         model = XGBRegressor(**params)
-        scores = cross_val_score(model, X, y, cv=kf, scoring='neg_root_mean_squared_error')
+        scores = cross_val_score(model, X, y, cv=tscv,
+                                 scoring='neg_root_mean_squared_error')
         return -scores.mean()
 
     study = optuna.create_study(direction='minimize', sampler=optuna.samplers.TPESampler(seed=42))
@@ -167,14 +177,21 @@ def build_ensemble(xgb_params: dict) -> StackingRegressor:
     Construye el Stacking Ensemble:
       - Base learners: XGBoost + Random Forest
       - Meta-learner:  Ridge Regression
+
+    NOTA de paralelismo: los base learners usan n_jobs=1-2 y el
+    Stacking n_jobs=4. Poner n_jobs=-1 en todos provoca
+    paralelismo anidado (los workers de joblib lanzan a su vez
+    más hilos) y el SO termina los workers por agotamiento de
+    memoria (TerminatedWorkerError).
     """
-    xgb = XGBRegressor(**{**xgb_params, 'verbosity': 0, 'random_state': 42})
+    xgb = XGBRegressor(**{**xgb_params, 'verbosity': 0, 'random_state': 42,
+                          'n_jobs': 2})
     rf  = RandomForestRegressor(
         n_estimators=300,
         max_depth=8,
         min_samples_leaf=5,
         random_state=42,
-        n_jobs=-1
+        n_jobs=1
     )
     ridge = Ridge(alpha=1.0)
 
@@ -182,7 +199,7 @@ def build_ensemble(xgb_params: dict) -> StackingRegressor:
         estimators=[('xgb', xgb), ('rf', rf)],
         final_estimator=ridge,
         cv=5,
-        n_jobs=-1
+        n_jobs=4
     )
     return ensemble
 
@@ -209,13 +226,17 @@ def build_pipeline(xgb_params: dict) -> Pipeline:
 
 def evaluate_model(pipeline: Pipeline, X: np.ndarray, y: np.ndarray) -> dict:
     """
-    Evalúa el pipeline con K-Fold CV (5 folds).
+    Evalúa el pipeline con validación cruzada temporal (5 folds).
+    TimeSeriesSplit preserva el orden cronológico de los datos
+    horarios: cada fold entrena con el pasado y valida con el
+    futuro, evitando fuga de información (data leakage).
+
     Retorna RMSE, MAE y R² con media y desviación estándar.
     """
-    kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    tscv = TimeSeriesSplit(n_splits=5)
     rmse_scores, mae_scores, r2_scores = [], [], []
 
-    for train_idx, val_idx in kf.split(X):
+    for train_idx, val_idx in tscv.split(X):
         X_tr, X_val = X[train_idx], X[val_idx]
         y_tr, y_val = y[train_idx], y[val_idx]
 
@@ -235,6 +256,37 @@ def evaluate_model(pipeline: Pipeline, X: np.ndarray, y: np.ndarray) -> dict:
         'r2_std':    np.std(r2_scores),
     }
     return metrics
+
+
+# ============================================================
+#  6b. IMPORTANCIA DE FEATURES (real, del modelo entrenado)
+# ============================================================
+
+def extract_feature_importances(pipeline: Pipeline, features: list) -> dict:
+    """
+    Extrae la importancia media de cada feature promediando las
+    importancias (gain / impurity) de los base learners del
+    Stacking Ensemble (XGBoost + Random Forest), normalizadas
+    a porcentaje (suman 100).
+    """
+    ensemble = pipeline.named_steps['ensemble']
+    imp = np.zeros(len(features), dtype=float)
+
+    # Normaliza cada base learner por separado (XGBoost usa "gain"
+    # y Random Forest "impurity", escalas distintas) y luego promedia.
+    # NOTA: en sklearn >= 1.x, StackingRegressor.estimators_ es una
+    # lista de estimadores (sin tuplas nombre/estimador).
+    for est in ensemble.estimators_:
+        e = np.asarray(est.feature_importances_, dtype=float)
+        s = e.sum()
+        if s > 0:
+            e = e / s
+        imp += e
+
+    imp /= len(ensemble.estimators_)
+    imp = imp * 100   # ya está normalizado a 100
+
+    return {f: round(float(v), 1) for f, v in zip(features, imp)}
 
 
 # ============================================================
@@ -275,7 +327,7 @@ def main():
     pipeline = build_pipeline(xgb_params)
 
     # ── Evaluación ───────────────────────────────────────────
-    print("\n[5/5] Evaluación con K-Fold CV (5 folds)...")
+    print("\n[5/5] Evaluación con TimeSeriesSplit CV (5 folds)...")
     metrics = evaluate_model(pipeline, X, y)
 
     print("\n  ┌──────────────────────────────┐")
@@ -287,9 +339,22 @@ def main():
     # ── Entrenamiento final con todos los datos ──────────────
     pipeline.fit(X, y)
 
+    # ── Importancia real de features + metadatos ─────────────
+    importances = extract_feature_importances(pipeline, FEATURES_EXT)
+    print("\n  Importancia de features (%):")
+    for f, v in sorted(importances.items(), key=lambda kv: -kv[1]):
+        print(f"    {f:<18} {v:>5.1f}")
+
     # ── Serialización ────────────────────────────────────────
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump({'pipeline': pipeline, 'features': FEATURES_EXT, 'metrics': metrics}, OUTPUT_PATH)
+    joblib.dump({
+        'pipeline':            pipeline,
+        'features':            FEATURES_EXT,
+        'metrics':             metrics,
+        'n_samples':           int(len(df)),
+        'feature_importances': importances,
+        'xgb_params':          xgb_params,
+    }, OUTPUT_PATH)
     print(f"\n  ✓ Modelo guardado → {OUTPUT_PATH}")
     print("\n  Listo. Ejecuta 'python api/main.py' para iniciar la API.\n")
 

@@ -102,12 +102,13 @@ function classifyWeather(temp, rainProb, cloud, wind) {
 }
 
 // ============================================================
-//  LLAMADA REAL A LA API (producción con FastAPI + XGBoost)
+//  LLAMADA REAL A LA API (FastAPI + XGBoost)
 // ============================================================
 
 /**
- * Llama al endpoint real de la API Python.
- * Descomentar en producción y reemplazar gbModel() en predict().
+ * Llama al endpoint real de la API Python y normaliza la
+ * respuesta al mismo formato que gbModel() para que la UI
+ * no distinga entre modo API y modo local.
  *
  * @param {Object} inp - Variables de entrada
  * @returns {Promise<Object>} Predicción del servidor
@@ -119,6 +120,46 @@ async function fetchPrediction(inp) {
     body: JSON.stringify(inp)
   });
   if (!response.ok) throw new Error(`API error: ${response.status}`);
+  const d = await response.json();
+  return {
+    predTemp:  d.pred_temp,
+    rainProb:  d.rain_prob,
+    sensacion: d.sensacion,
+    windPred:  d.wind_pred,
+    conf:      d.confidence,
+    rmse:      d.rmse,
+    icon:      d.icon,
+    desc:      d.condition,
+    source:    'api'
+  };
+}
+
+/**
+ * Llama al endpoint /forecast de la API (días reales, reproducible).
+ * @param {Object} inp - Variables de entrada
+ * @returns {Promise<Array<Object>>} Array de 7 días {day, icon, hi, lo, rainProb}
+ */
+async function fetchForecast(inp) {
+  const response = await fetch(`${API_BASE_URL}/forecast`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(inp)
+  });
+  if (!response.ok) throw new Error(`API error: ${response.status}`);
+  const d = await response.json();
+  return d.forecast.map(f => ({
+    day: f.day, icon: f.icon, hi: f.hi, lo: f.lo, rainProb: f.rain_prob
+  }));
+}
+
+/**
+ * Llama a /model/info: métricas reales de CV, importancia de
+ * features e hiperparámetros óptimos (Optuna).
+ * @returns {Promise<Object>} Información del modelo
+ */
+async function fetchModelInfo() {
+  const response = await fetch(`${API_BASE_URL}/model/info`);
+  if (!response.ok) throw new Error(`API error: ${response.status}`);
   return response.json();
 }
 
@@ -128,14 +169,14 @@ async function fetchPrediction(inp) {
 
 /**
  * Genera pronóstico de 7 días basado en los inputs actuales
- * usando interpolación temporal con patrones sinusoidales
- * (equivalente al componente estacional del modelo SARIMA).
+ * usando interpolación temporal con patrones sinusoidales.
+ * (Modo local de respaldo cuando la API no está disponible.)
  *
  * @param {Object} inp - Variables de entrada actuales
  * @returns {Array<Object>} Array de 7 días con hi/lo/icon
  */
 function generateForecast(inp) {
-  const days  = ['Hoy', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+  const days  = ['Hoy', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
   const icons = ['☀️',  '⛅',  '🌧️', '🌤️', '☀️',  '⛅',  '🌦️'];
 
   return days.map((day, i) => {
@@ -161,5 +202,8 @@ const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
 // Exportar para uso en Node.js / testing
 if (typeof module !== 'undefined') {
-  module.exports = { gbModel, classifyWeather, fetchPrediction, generateForecast };
+  module.exports = {
+    gbModel, classifyWeather, fetchPrediction, fetchForecast,
+    fetchModelInfo, generateForecast
+  };
 }
