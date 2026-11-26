@@ -212,7 +212,27 @@ async function buildForecast() {
     container.appendChild(d);
   });
 
-  renderForecastChart(forecast.map(f => f.day), tempsHi, tempsLo);
+  // El canvas se mide al crear el gráfico: si la pestaña está oculta
+  // (display:none) su tamaño es 0×0 y el gráfico no se ve. Se espera
+  // a que el canvas tenga dimensiones reales antes de dibujarlo.
+  const labels = forecast.map(f => f.day);
+  whenCanvasReady(() => renderForecastChart(labels, tempsHi, tempsLo));
+}
+
+/**
+ * Ejecuta el callback cuando el canvas del gráfico tiene tamaño real
+ * (es decir, cuando su pestaña ya es visible y tiene layout).
+ * @param {Function} fn - Función a ejecutar
+ */
+function whenCanvasReady(fn, attempts = 0) {
+  const canvas = document.getElementById('forecastChart');
+  if (!canvas) return;
+  if (canvas.clientWidth > 0 && canvas.clientHeight > 0) {
+    fn();
+    return;
+  }
+  if (attempts > 40) return;          // ~2 s de reintentos
+  requestAnimationFrame(() => whenCanvasReady(fn, attempts + 1));
 }
 
 // ============================================================
@@ -226,7 +246,10 @@ async function buildForecast() {
  * @param {number[]} tempsLo - Temperaturas mínimas
  */
 function renderForecastChart(labels, tempsHi, tempsLo) {
-  const ctx = document.getElementById('forecastChart').getContext('2d');
+  const canvas = document.getElementById('forecastChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+
+  const ctx = canvas.getContext('2d');
   if (forecastChartInst) forecastChartInst.destroy();
 
   forecastChartInst = new Chart(ctx, {
