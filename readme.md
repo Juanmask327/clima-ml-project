@@ -4,6 +4,13 @@ Sistema de predicción del clima para micro-zonas usando un **Stacking Ensemble*
 (XGBoost + Random Forest + Ridge Regression), expuesto como API REST con FastAPI
 y con interfaz web en HTML + JavaScript puro.
 
+| | |
+|---|---|
+| 🌐 **App pública (temporal)** | https://breakfast-physician-bacterial-sum.trycloudflare.com |
+| 📦 **Repositorio** | https://github.com/Juanmask327/clima-ml-project |
+| 📊 **Métricas (CV temporal)** | R² 0.931 · RMSE 1.114 °C · MAE 0.842 °C |
+| 🧪 **Tests** | 12/12 (`pytest backend/tests/`) |
+
 ---
 
 ## Estructura del proyecto
@@ -149,6 +156,20 @@ fly deploy
 docker build -t clima-ml .
 docker run -p 8000:8000 clima-ml
 ```
+
+### Opción E · Script automático (local → Internet)
+
+```powershell
+.\start_deploy.ps1
+```
+
+Construye la imagen, levanta el contenedor y abre un túnel público con
+Cloudflare, mostrando la URL al final. Requiere Docker Desktop y
+`cloudflared` (`winget install Cloudflare.cloudflared`).
+
+> ⚠️ El túnel de Cloudflare **sin cuenta es temporal**: funciona mientras
+> el equipo esté encendido y no garantiza disponibilidad. Para una URL
+> fija y estable (recomendado para la tesis), usa Render (opción A).
 
 ### Archivos de despliegue incluidos
 
