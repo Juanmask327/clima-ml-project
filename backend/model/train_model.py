@@ -107,11 +107,163 @@ def generate_synthetic_data(n_samples: int = 8760) -> pd.DataFrame:
 
 
 # ============================================================
-#  2. FEATURE ENGINEERING
+#  2. CARGA DE DATOS REALES (estaciones / sensores)
+# ============================================================
+# Para pasar de datos sintéticos a datos reales de una estación
+# meteorológica basta con dejar un CSV en backend/data/ con las
+# columnas de entrada (temp_actual, humedad, presion, viento,
+# nubosidad, indice_uv) y, opcionalmente, una columna target
+# 'temp_pred'.
+#
+# Si el CSV NO trae 'temp_pred', se construye automáticamente
+# como la temperatura de la siguiente hora (shift -1), que es la
+# definición natural del problema de predicción horaria.
+# ============================================================
+
+# Alias aceptados -> nombre interno del modelo.
+# Así un CSV de estación con nombres propios ("Temperatura", "HR",
+# "P atm", ...) se adapta sin tocar el resto del código.
+COLUMN_ALIASES = {
+    'temp_actual':   ['temp_actual', 'temp', 'temperatura', 'temperature', 'temp_c', 'tamb'],
+    'humedad':       ['humedad', 'hum', 'hr', 'humedad_relativa', 'relative_humidity', 'rh'],
+    'presion':       ['presion', 'pres', 'presion_atm', 'pressure', 'p_atm', 'bar'],
+    'viento':        ['viento', 'wind', 'vel_viento', 'wind_speed', 'vv', 'ws'],
+    'nubosidad':     ['nubosidad', 'cloud', 'nub', 'nubosidad_pct', 'cloudiness'],
+    'indice_uv':     ['indice_uv', 'uv', 'uv_index', 'radiacion_uv'],
+    'temp_pred':     ['temp_pred', 'target', 'y', 'temp_siguiente', 'temp_next'],
+}
+
+# Unidades aceptadas para la presión (hPa) y la temperatura (°C).
+# Cada entrada es (factor, offset) tal que: valor_C = valor * factor + offset
+PRESSURE_UNITS = {
+    'hpa': (1.0, 0.0), 'mbar': (1.0, 0.0), 'mb': (1.0, 0.0),
+    'pa': (0.01, 0.0), 'kpa': (10.0, 0.0), 'bar': (100.0, 0.0),
+}
+TEMP_UNITS = {
+    'c': (1.0, 0.0), 'celsius': (1.0, 0.0),
+    'f': (0.5555556, -17.777778), 'fahrenheit': (0.5555556, -17.777778),
+    'k': (1.0, -273.15), 'kelvin': (1.0, -273.15),
+}
+
+
+def _normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    """Renombra las columnas del CSV a los nombres internos del modelo."""
+    df = df.copy()
+    df.columns = [str(c).strip().lower().replace(' ', '_') for c in df.columns]
+
+    renames = {}
+    for internal, aliases in COLUMN_ALIASES.items():
+        if internal in df.columns:
+            continue
+        for alias in aliases:
+            if alias in df.columns:
+                renames[alias] = internal
+                break
+    if renames:
+        df = df.rename(columns=renames)
+    return df
+
+
+def _detect_and_convert_units(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convierte presión y temperatura a hPa y °C si el CSV trae una
+    columna de unidades (p. ej. 'presion_unit' = 'kpa').
+    """
+    df = df.copy()
+    unit_col = next(
+        (c for c in df.columns if c in ('presion_unit', 'pressure_unit', 'pres_unit', 'units')), None
+    )
+    if unit_col and 'presion' in df.columns:
+        conv = df[unit_col].astype(str).str.strip().str.lower().map(PRESSURE_UNITS)
+        factor = conv.map(lambda t: t[0] if isinstance(t, tuple) else 1.0).fillna(1.0)
+        offset = conv.map(lambda t: t[1] if isinstance(t, tuple) else 0.0).fillna(0.0)
+        df['presion'] = df['presion'] * factor + offset
+        df = df.drop(columns=[unit_col])
+
+    temp_col = next(
+        (c for c in df.columns if c in ('temp_unit', 'temperature_unit', 'temp_c_unit')), None
+    )
+    if temp_col and 'temp_actual' in df.columns:
+        conv = df[temp_col].astype(str).str.strip().str.lower().map(TEMP_UNITS)
+        factor = conv.map(lambda t: t[0] if isinstance(t, tuple) else 1.0).fillna(1.0)
+        offset = conv.map(lambda t: t[1] if isinstance(t, tuple) else 0.0).fillna(0.0)
+        df['temp_actual'] = df['temp_actual'] * factor + offset
+        df = df.drop(columns=[temp_col])
+
+    return df
+
+
+def load_real_data(path: Path) -> pd.DataFrame:
+    """
+    Carga y normaliza un CSV de datos meteorológicos reales.
+
+    - Normaliza nombres de columna (acepta alias comunes).
+    - Convierte unidades si se indica la columna de unidades.
+    - Si falta el target 'temp_pred', lo construye con shift(-1)
+      (temperatura de la siguiente hora) y descarta la última fila.
+    - Valida rangos físicamente plausibles y elimina outliers.
+
+    Raises:
+        ValueError: si faltan columnas obligatorias o no hay datos válidos.
+    """
+    df = pd.read_csv(path)
+    df = _normalize_column_names(df)
+    df = _detect_and_convert_units(df)
+
+    # ── Columnas obligatorias ──────────────────────────────
+    faltantes = [c for c in FEATURES if c not in df.columns]
+    if faltantes:
+        raise ValueError(
+            f"Faltan columnas obligatorias en {path.name}: {faltantes}. "
+            f"Columnas encontradas: {list(df.columns)}. "
+            f"Aliases reconocidos: {COLUMN_ALIASES}"
+        )
+
+    # ── Target: usar el del CSV o construirlo por shift ────
+    # El shift se hace DESPUÉS de limpiar las features, para que
+    # el objetivo corresponda a la siguiente fila VÁLIDA (y no a
+    # una fila que luego se descartaría, que desalinearía X e y).
+    necesita_target = TARGET not in df.columns
+
+    # ── Limpieza de valores no numéricos / NaN ────────────
+    cols = FEATURES + ([TARGET] if not necesita_target else [])
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors='coerce').astype('float64')
+    df = df.dropna(subset=cols)
+
+    # ── Filtro de rangos físicamente plausibles ────────────
+    rangos = {
+        'temp_actual': (-60, 60), 'humedad': (0, 100), 'presion': (800, 1100),
+        'viento': (0, 200), 'nubosidad': (0, 100), 'indice_uv': (0, 20),
+    }
+    mask = pd.Series(True, index=df.index)
+    for col, (lo, hi) in rangos.items():
+        mask &= df[col].between(lo, hi)
+    df = df[mask]
+
+    # ── Construcción del target: temperatura siguiente hora ─
+    if necesita_target:
+        df[TARGET] = df['temp_actual'].shift(-1)
+        df = df.dropna(subset=[TARGET])
+        df[TARGET] = pd.to_numeric(df[TARGET], errors='coerce')
+
+    # ── Rango del target (por si venía en el CSV) ──────────
+    if TARGET in df.columns:
+        df = df[df[TARGET].between(-60, 60)]
+
+    if df.empty:
+        raise ValueError(f"No quedan filas válidas tras la limpieza de {path.name}")
+
+    return df.reset_index(drop=True)
+
+
+# ============================================================
+#  3. FEATURE ENGINEERING
 # ============================================================
 
 FEATURES = ['temp_actual', 'humedad', 'presion', 'viento', 'nubosidad', 'indice_uv']
 TARGET   = 'temp_pred'
+
 
 def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     """Añade features derivadas para mejorar el modelo."""
@@ -301,8 +453,17 @@ def main():
     # ── Datos ───────────────────────────────────────────────
     print("\n[1/5] Cargando datos...")
     if DATA_PATH.exists():
-        df = pd.read_csv(DATA_PATH)
-        print(f"  ✓ Cargados {len(df):,} registros desde {DATA_PATH}")
+        try:
+            df = load_real_data(DATA_PATH)
+            print(f"  ✓ Cargados {len(df):,} registros válidos desde {DATA_PATH}")
+            print(f"    Columnas: {list(df.columns)}")
+            if TARGET not in pd.read_csv(DATA_PATH, nrows=0).columns:
+                print("    (target 'temp_pred' construido con shift(-1): "
+                      "temperatura de la siguiente hora)")
+        except Exception as e:
+            print(f"  ✗ Error leyendo los datos: {e}")
+            print("  ⚠ Cayendo a datos sintéticos...")
+            df = generate_synthetic_data(n_samples=8760)
     else:
         print("  ⚠ Archivo de datos no encontrado. Generando datos sintéticos...")
         df = generate_synthetic_data(n_samples=8760)

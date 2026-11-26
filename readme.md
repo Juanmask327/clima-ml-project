@@ -44,6 +44,58 @@ clima_ml_project/
 
 ---
 
+## 📡 Conectar datos reales de una estación
+
+El pipeline de entrenamiento ya soporta datos reales. Para usarlos,
+coloca el CSV de tu estación en `backend/data/weather_data.csv` y
+re-entrena:
+
+```bash
+python backend/model/train_model.py
+```
+
+### Columnas requeridas
+
+| Columna interna | Significado | Unidad |
+|-----------------|-------------|--------|
+| `temp_actual`   | Temperatura observada | °C |
+| `humedad`       | Humedad relativa | % |
+| `presion`       | Presión atmosférica | hPa |
+| `viento`        | Velocidad del viento | km/h |
+| `nubosidad`     | Nubosidad | % |
+| `indice_uv`     | Índice UV | 0–12 |
+| `temp_pred`     | *(opcional)* Objetivo: temp de la siguiente hora | °C |
+
+### El cargador se adapta solo
+
+`load_real_data()` en `backend/model/train_model.py` reconoce nombres
+de columna habituales de una estación, así que **no hace falta
+renombrar nada a mano**:
+
+| Interno | Alias aceptados |
+|---------|-----------------|
+| `temp_actual` | `temp`, `temperatura`, `temperature`, `temp_c`, `tamb` |
+| `humedad` | `hum`, `hr`, `humedad_relativa`, `relative_humidity`, `rh` |
+| `presion` | `pres`, `presion_atm`, `pressure`, `p_atm`, `bar` |
+| `viento` | `wind`, `vel_viento`, `wind_speed`, `vv`, `ws` |
+| `nubosidad` | `cloud`, `nub`, `cloudiness` |
+| `indice_uv` | `uv`, `uv_index`, `radiacion_uv` |
+
+Además:
+
+- **Unidades**: si el CSV trae una columna `presion_unit` o `temp_unit`
+  (`kPa`, `Pa`, `bar`, `F`, `K`…), se convierte automáticamente a hPa y °C.
+- **Target**: si no viene `temp_pred`, se construye sola con `shift(-1)`
+  (temperatura de la siguiente hora).
+- **Limpieza**: descarta NaN, valores no numéricos y outliers fuera de
+  rangos físicamente plausibles (p. ej. humedad 250%).
+- **Orden temporal**: las filas no se reordenan nunca.
+
+Si falta alguna columna obligatoria, el entrenamiento se detiene con un
+mensaje que indica exactamente cuál falta y qué alias se aceptan.
+
+---
+
 ## Arquitectura del sistema
 
 ```
