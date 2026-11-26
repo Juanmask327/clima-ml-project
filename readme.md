@@ -9,7 +9,10 @@ y con interfaz web en HTML + JavaScript puro.
 | 🌐 **App pública (temporal)** | https://breakfast-physician-bacterial-sum.trycloudflare.com |
 | 📦 **Repositorio** | https://github.com/Juanmask327/clima-ml-project |
 | 📊 **Métricas (CV temporal)** | R² 0.931 · RMSE 1.114 °C · MAE 0.842 °C |
-| 🧪 **Tests** | 12/12 (`pytest backend/tests/`) |
+| 🧪 **Tests** | 26/26 (`pytest backend/tests/`) |
+
+> 📋 **[ESTADO_Y_SEGUIMIENTO.md](ESTADO_Y_SEGUIMIENTO.md)** — registro de
+> trabajo: bugs corregidos, métricas, comandos y pendientes.
 
 ---
 
