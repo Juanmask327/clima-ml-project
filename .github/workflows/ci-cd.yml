@@ -13,6 +13,10 @@ on:
   pull_request:
     branches: [master, main]
 
+env:
+  # GHCR exige que el nombre de la imagen este en minusculas.
+  IMAGE_NAME: ghcr.io/juanmask327/clima-ml-project
+
 jobs:
   test:
     name: Tests
@@ -59,7 +63,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
           build-args: |
             PYTHON_VERSION=3.12
