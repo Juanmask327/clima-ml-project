@@ -10,7 +10,7 @@
         href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@2.44.0/tabler-icons.min.css" />
 
   <!-- Estilos del proyecto -->
-  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
 <div class="app">
@@ -48,7 +48,7 @@
         <label>Temperatura actual (°C)
           <span class="val" id="v-temp">18°C</span>
         </label>
-        <input type="range" min="-10" max="45" value="18" step="1"
+        <input type="range" data-var="temp" min="-10" max="45" value="18" step="1"
                oninput="upd('v-temp',this.value,'°C');predict()">
       </div>
 
@@ -56,7 +56,7 @@
         <label>Humedad relativa (%)
           <span class="val" id="v-hum">65%</span>
         </label>
-        <input type="range" min="0" max="100" value="65" step="1"
+        <input type="range" data-var="hum" min="0" max="100" value="65" step="1"
                oninput="upd('v-hum',this.value,'%');predict()">
       </div>
 
@@ -64,7 +64,7 @@
         <label>Presión atm. (hPa)
           <span class="val" id="v-pres">1013</span>
         </label>
-        <input type="range" min="970" max="1050" value="1013" step="1"
+        <input type="range" data-var="pres" min="970" max="1050" value="1013" step="1"
                oninput="upd('v-pres',this.value,'');predict()">
       </div>
 
@@ -72,7 +72,7 @@
         <label>Velocidad viento (km/h)
           <span class="val" id="v-wind">12</span>
         </label>
-        <input type="range" min="0" max="120" value="12" step="1"
+        <input type="range" data-var="wind" min="0" max="120" value="12" step="1"
                oninput="upd('v-wind',this.value,'');predict()">
       </div>
 
@@ -80,7 +80,7 @@
         <label>Nubosidad (%)
           <span class="val" id="v-cloud">40%</span>
         </label>
-        <input type="range" min="0" max="100" value="40" step="1"
+        <input type="range" data-var="cloud" min="0" max="100" value="40" step="1"
                oninput="upd('v-cloud',this.value,'%');predict()">
       </div>
 
@@ -88,7 +88,7 @@
         <label>Índice UV
           <span class="val" id="v-uv">5</span>
         </label>
-        <input type="range" min="0" max="12" value="5" step="1"
+        <input type="range" data-var="uv" min="0" max="12" value="5" step="1"
                oninput="upd('v-uv',this.value,'');predict()">
       </div>
 
@@ -267,8 +267,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
 
 <!-- ── Módulos del proyecto (orden importa) ── -->
-<script src="js/model.js"></script>
-<script src="js/ui.js"></script>
+<script src="/js/model.js"></script>
+<script src="/js/ui.js"></script>
 
 </body>
 </html>

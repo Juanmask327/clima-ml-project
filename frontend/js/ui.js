@@ -20,9 +20,11 @@ let apiAvailable      = null;    // null=desconocido, true/false
 //  INICIALIZACIÓN
 // ============================================================
 
-document.addEventListener('DOMContentLoaded', () => {
-  predict();            // Predicción inicial al cargar la página
-  probeApi();           // Detecta si el backend está disponible
+document.addEventListener('DOMContentLoaded', async () => {
+  // Primero se comprueba la API: si no, predict() cae al modo
+  // local simulado y la UI lo indica en el badge.
+  await probeApi();
+  await predict();       // Predicción inicial al cargar la página
 });
 
 /**
@@ -30,13 +32,14 @@ document.addEventListener('DOMContentLoaded', () => {
  */
 async function probeApi() {
   try {
-    const res = await fetch(`${API_BASE_URL}/health`, { cache: 'no-store' });
+    const res = await apiFetch('/health');
     const d = await res.json();
     apiAvailable = !!d.model_loaded;
     setApiStatus(apiAvailable ? 'api-ok' : 'api-degraded');
-  } catch {
+  } catch (err) {
     apiAvailable = false;
     setApiStatus('api-off');
+    console.warn('[API] No se pudo contactar la API:', err.message);
   }
 }
 
@@ -63,12 +66,19 @@ function setApiStatus(state) {
  */
 function switchTab(tab, btn) {
   ['predict', 'forecast', 'model'].forEach(t => {
-    document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none';
+    const el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === tab ? '' : 'none';
   });
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
-  if (tab === 'forecast') buildForecast();
-  if (tab === 'model')    loadModelInfo();
+  // Las cargas son asíncronas: se capturan los errores para que
+  // un fallo no quede como "unhandled promise rejection".
+  if (tab === 'forecast') {
+    buildForecast().catch(err => console.error('[Forecast]', err));
+  }
+  if (tab === 'model') {
+    loadModelInfo().catch(err => console.error('[ModelInfo]', err));
+  }
 }
 
 // ============================================================
@@ -81,13 +91,21 @@ function switchTab(tab, btn) {
  */
 function getInputs() {
   const sliders = document.querySelectorAll('input[type=range]');
+  const vals = Array.from(sliders).map(s => +s.value);
+  // Se leen por id (data-var) para no depender del orden en el HTML.
+  const byId = {};
+  sliders.forEach(s => { if (s.dataset && s.dataset.var) byId[s.dataset.var] = +s.value; });
+  const pick = (name, idx, def) => {
+    const v = byId[name] != null ? byId[name] : (vals[idx] != null ? vals[idx] : def);
+    return Number.isFinite(v) ? v : def;
+  };
   return {
-    temp:  +sliders[0].value,
-    hum:   +sliders[1].value,
-    pres:  +sliders[2].value,
-    wind:  +sliders[3].value,
-    cloud: +sliders[4].value,
-    uv:    +sliders[5].value
+    temp:  pick('temp',  0, 18),
+    hum:   pick('hum',   1, 65),
+    pres:  pick('pres',  2, 1013),
+    wind:  pick('wind',  3, 12),
+    cloud: pick('cloud', 4, 40),
+    uv:    pick('uv',    5, 5)
   };
 }
 
@@ -114,19 +132,15 @@ async function predict() {
   const inp = getInputs();
   let r, source;
 
-  if (apiAvailable !== false) {
-    try {
-      r = await fetchPrediction(inp);   // ← modelo ML real
-      source = 'api';
-      if (apiAvailable === null) { apiAvailable = true; setApiStatus('api-ok'); }
-    } catch {
-      apiAvailable = false;
-      setApiStatus('api-off');
-      r = { ...gbModel(inp), source: 'local' };   // ← respaldo
-      source = 'local';
-    }
-  } else {
-    r = { ...gbModel(inp), source: 'local' };
+  try {
+    r = await fetchPrediction(inp);   // ← modelo ML real
+    source = 'api';
+    if (!apiAvailable) { apiAvailable = true; setApiStatus('api-ok'); }
+  } catch (err) {
+    console.warn('[API] /predict falló, se usa simulación local:', err.message);
+    apiAvailable = false;
+    setApiStatus('api-off');
+    r = { ...gbModel(inp), source: 'local' };   // ← respaldo
     source = 'local';
   }
 
@@ -166,16 +180,13 @@ async function buildForecast() {
   const inp = getInputs();
   let forecast;
 
-  if (apiAvailable !== false) {
-    try {
-      forecast = await fetchForecast(inp);   // ← API real
-      if (apiAvailable === null) { apiAvailable = true; setApiStatus('api-ok'); }
-    } catch {
-      apiAvailable = false;
-      setApiStatus('api-off');
-      forecast = generateForecast(inp);
-    }
-  } else {
+  try {
+    forecast = await fetchForecast(inp);   // ← API real
+    if (!apiAvailable) { apiAvailable = true; setApiStatus('api-ok'); }
+  } catch (err) {
+    console.warn('[API] /forecast falló, se usa pronóstico local:', err.message);
+    apiAvailable = false;
+    setApiStatus('api-off');
     forecast = generateForecast(inp);
   }
 
@@ -306,24 +317,22 @@ async function loadModelInfo() {
   if (modelInfoLoaded) return;
 
   let info;
-  if (apiAvailable !== false) {
-    try {
-      info = await fetchModelInfo();
-      if (apiAvailable === null) { apiAvailable = true; setApiStatus('api-ok'); }
-    } catch {
-      apiAvailable = false;
-      setApiStatus('api-off');
-      info = FALLBACK_MODEL_INFO;
-      setEl('metrics-source', 'Valores de referencia (API desconectada)');
-    }
-  } else {
+  let fromApi = false;
+  try {
+    info = await fetchModelInfo();
+    fromApi = true;
+    apiAvailable = true;
+    setApiStatus('api-ok');
+  } catch (err) {
+    console.warn('[API] /model/info falló, se usan valores de referencia:', err.message);
+    apiAvailable = false;
+    setApiStatus('api-off');
     info = FALLBACK_MODEL_INFO;
-    setEl('metrics-source', 'Valores de referencia (API desconectada)');
   }
 
-  if (apiAvailable) {
-    setEl('metrics-source', 'Métricas reales de validación cruzada (TimeSeriesSplit 5 folds)');
-  }
+  setEl('metrics-source', fromApi
+    ? 'Métricas reales de validación cruzada (TimeSeriesSplit 5 folds)'
+    : 'Valores de referencia (API desconectada)');
 
   // ── Métricas ─────────────────────────────────────────────
   setEl('m-r2',       info.r2_score.toFixed(3));

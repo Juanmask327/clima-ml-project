@@ -1,0 +1,27 @@
+# ============================================================
+# PREDICCIÓN CLIMÁTICA ML · Despliegue en Render
+# ============================================================
+# Uso:
+#   1. Sube el repo a GitHub
+#   2. En Render: "New" → "Blueprint" → apunta a este repositorio
+#   3. Render detecta render.yaml y crea el Web Service
+#
+# URL resultante: https://clima-ml-api.onrender.com
+# ============================================================
+
+services:
+  - type: web
+    name: clima-ml-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: master
+    buildCommand: pip install -r Requirements.txt
+    startCommand: >
+      uvicorn api.main:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.8"
+      - key: PYTHONUTF8
+        value: "1"

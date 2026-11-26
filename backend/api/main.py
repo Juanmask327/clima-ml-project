@@ -35,6 +35,7 @@ if hasattr(sys.stdout, 'reconfigure'):
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 # ─── Ruta del modelo serializado ────────────────────────────
@@ -188,8 +189,8 @@ app.add_middleware(
 #  ENDPOINTS
 # ============================================================
 
-@app.get("/", tags=["Info"])
-def root():
+@app.get("/api/info", tags=["Info"])
+def api_info():
     """Información general de la API."""
     return {
         "name":    "Clima ML API",
@@ -332,11 +333,27 @@ def model_info():
 # ============================================================
 #  FRONTEND ESTÁTICO (todo en un solo servidor)
 # ============================================================
-# Disponible en: http://localhost:8000/ui/
+# Disponible en:
+#   http://localhost:8000/       → raíz (URL de despliegue)
+#   http://localhost:8000/ui/    → alias
+#
+# Los assets (js/, css/) se montan en la raíz para que las
+# rutas relativas del index.html funcionen en ambos casos.
+# El orden importa: primero los mounts, luego las rutas de la
+# API (FastAPI evalúa en orden de registro).
 FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / 'frontend'
 if FRONTEND_DIR.exists():
-    app.mount("/ui", StaticFiles(directory=str(FRONTEND_DIR), html=True),
-              name="frontend")
+    app.mount("/js",  StaticFiles(directory=str(FRONTEND_DIR / 'js'),  check_dir=False), name="js")
+    app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / 'css'), check_dir=False), name="css")
+    app.mount("/ui",  StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend-ui")
+
+    @app.get("/", include_in_schema=False)
+    def frontend_root():
+        """Sirve la interfaz web en la raíz (URL de despliegue)."""
+        index = FRONTEND_DIR / 'index.html'
+        if index.exists():
+            return FileResponse(str(index))
+        return {"detail": "Frontend no encontrado", "ui": "/ui/"}
 
 
 # ============================================================

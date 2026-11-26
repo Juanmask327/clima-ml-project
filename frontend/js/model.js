@@ -26,8 +26,15 @@ const MODEL_CONFIG = {
   RMSE_BASE:       1.8,     // RMSE base estimado
 };
 
-// ─── API endpoint (para producción) ─────────────────────────
-const API_BASE_URL = 'http://localhost:8000';   // FastAPI backend
+// ─── API endpoint ───────────────────────────────────────────
+// Usa el MISMO origen que sirvió la página (URL relativa). Así
+// funciona igual en local y en cualquier despliegue en la nube
+// (Render/Railway/Fly.io), sin recompilar ni cambiar nada.
+const API_BASE_URL = window.location.origin;
+
+// Si la UI se sirve como archivo local (file://), el origen es
+// "null" y no hay API: se usará el modo local simulado.
+const API_ENABLED = /^https?:$/.test(window.location.protocol);
 
 // ============================================================
 //  MODELO GBR SIMULADO (prototipo)
@@ -106,6 +113,35 @@ function classifyWeather(temp, rainProb, cloud, wind) {
 // ============================================================
 
 /**
+ * Wrapper de fetch con timeout y errores claros.
+ * @param {string} path - Ruta del endpoint (ej. '/predict')
+ * @param {Object} opts - Opciones de fetch
+ * @returns {Promise<Response>} Respuesta HTTP
+ */
+async function apiFetch(path, opts = {}) {
+  if (!API_ENABLED) {
+    throw new Error('API no disponible (página abierta como file://)');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...opts,
+      signal: controller.signal,
+      cache: 'no-store'
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json()).detail || ''; } catch (_) {}
+      throw new Error(`API ${response.status}${detail ? ': ' + detail : ''}`);
+    }
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * Llama al endpoint real de la API Python y normaliza la
  * respuesta al mismo formato que gbModel() para que la UI
  * no distinga entre modo API y modo local.
@@ -114,12 +150,11 @@ function classifyWeather(temp, rainProb, cloud, wind) {
  * @returns {Promise<Object>} Predicción del servidor
  */
 async function fetchPrediction(inp) {
-  const response = await fetch(`${API_BASE_URL}/predict`, {
+  const response = await apiFetch('/predict', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inp)
   });
-  if (!response.ok) throw new Error(`API error: ${response.status}`);
   const d = await response.json();
   return {
     predTemp:  d.pred_temp,
@@ -140,12 +175,11 @@ async function fetchPrediction(inp) {
  * @returns {Promise<Array<Object>>} Array de 7 días {day, icon, hi, lo, rainProb}
  */
 async function fetchForecast(inp) {
-  const response = await fetch(`${API_BASE_URL}/forecast`, {
+  const response = await apiFetch('/forecast', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(inp)
   });
-  if (!response.ok) throw new Error(`API error: ${response.status}`);
   const d = await response.json();
   return d.forecast.map(f => ({
     day: f.day, icon: f.icon, hi: f.hi, lo: f.lo, rainProb: f.rain_prob
@@ -158,8 +192,7 @@ async function fetchForecast(inp) {
  * @returns {Promise<Object>} Información del modelo
  */
 async function fetchModelInfo() {
-  const response = await fetch(`${API_BASE_URL}/model/info`);
-  if (!response.ok) throw new Error(`API error: ${response.status}`);
+  const response = await apiFetch('/model/info');
   return response.json();
 }
 
@@ -183,7 +216,12 @@ function generateForecast(inp) {
     const variation = Math.sin(i * 0.8) * 3 + Math.cos(i * 1.2) * 2;
     const hi = round1(inp.temp + variation);
     const lo = round1(hi - 6 - Math.random() * 3);
-    return { day, icon: icons[i], hi, lo };
+    // Probabilidad de lluvia estimada (misma heurística que la API)
+    const rainProb = clamp(
+      Math.round(inp.hum * 0.6 + inp.cloud * 0.4 - (inp.pres - 970) * 0.3 - i * 2),
+      0, 100
+    );
+    return { day, icon: icons[i], hi, lo, rainProb };
   });
 }
 

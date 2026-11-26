@@ -84,11 +84,11 @@ uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 - Documentación interactiva: `http://localhost:8000/docs`
-- **Frontend servido por la API**: `http://localhost:8000/ui/`
+- **Frontend servido por la API**: `http://localhost:8000/` (raíz) o `http://localhost:8000/ui/` (alias)
 
 ### 4. Abrir el frontend
 
-Abre `http://localhost:8000/ui/` en el navegador (recomendado) o
+Abre `http://localhost:8000/` en el navegador (recomendado) o
 `frontend/index.html` directamente.
 
 El frontend **detecta automáticamente** si la API está disponible:
@@ -98,12 +98,63 @@ El frontend **detecta automáticamente** si la API está disponible:
 - ⚠️ API desconectada → usa un modo de respaldo local simulado
   (el badge del header indica en modo estás).
 
+> **Nota:** el frontend llama a la API usando `window.location.origin`
+> (el mismo origen que sirvió la página). Por eso funciona idéntico
+> en local y en un despliegue en la nube, sin recompilar nada.
+
 ### 5. Ejecutar los tests
 
 ```bash
 cd backend
 pytest tests/ -v
 ```
+
+---
+
+## 🚀 Despliegue en la nube
+
+El proyecto está listo para desplegarse en cualquier plataforma.
+El frontend usa rutas relativas al origen, así que **no requiere
+ninguna configuración de URL**.
+
+### Opción A · Render (gratis, la más simple)
+
+1. Sube el repositorio a GitHub.
+2. En [render.com](https://render.com) → **New** → **Blueprint**.
+3. Apunta al repositorio; Render lee `render.yaml` automáticamente.
+4. URL final: `https://clima-ml-api.onrender.com`
+
+> En el plan gratuito la app se duerme tras 15 min de inactividad;
+> la primera carga tarda ~1 min.
+
+### Opción B · Railway
+
+1. `railway init` y `railway up` (usa `Procfile`).
+2. O conecta el repo en [railway.app](https://railway.app).
+
+### Opción C · Fly.io
+
+```bash
+fly launch --no-deploy --copy-config
+fly deploy
+```
+
+### Opción D · Docker (cualquier servidor)
+
+```bash
+docker build -t clima-ml .
+docker run -p 8000:8000 clima-ml
+```
+
+### Archivos de despliegue incluidos
+
+| Archivo       | Plataforma           |
+|---------------|----------------------|
+| `render.yaml` | Render (Blueprint)   |
+| `Procfile`    | Railway / Heroku     |
+| `fly.toml`    | Fly.io               |
+| `Dockerfile`  | Docker / K8s / VPS   |
+| `runtime.txt` | Versión de Python    |
 
 ---
 

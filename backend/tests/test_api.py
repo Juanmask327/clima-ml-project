@@ -24,8 +24,17 @@ VALID_INPUT = {
 
 # ── Endpoints de información ────────────────────────────────
 
-def test_root():
+def test_root_serves_frontend():
+    """La raíz sirve la interfaz web (URL pública de despliegue)."""
     r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "Predicción Climática" in r.text
+
+
+def test_api_info():
+    """La información de la API está en /api/info."""
+    r = client.get("/api/info")
     assert r.status_code == 200
     body = r.json()
     assert body["name"] == "Clima ML API"
@@ -113,4 +122,24 @@ def test_model_info():
 def test_frontend_served():
     r = client.get("/ui/")
     assert r.status_code == 200
-    assert "Predicción Climática" in r.text
+
+
+def test_static_assets_at_root():
+    """Los assets se sirven en la raíz (paths absolutos del index.html)."""
+    for path in ("/js/model.js", "/js/ui.js", "/css/styles.css"):
+        r = client.get(path)
+        assert r.status_code == 200, f"{path} no se sirve en la raíz"
+        assert r.content
+
+
+def test_frontend_uses_relative_api_url():
+    """
+    El frontend NO debe apuntar a localhost:8000 hardcodeado:
+    en la nube el navegador debe usar el mismo origen.
+    """
+    js = client.get("/js/model.js").text
+    assert "window.location.origin" in js, "Debe usar window.location.origin"
+    # La asignación no debe apuntar a un host fijo
+    for line in js.splitlines():
+        if "API_BASE_URL =" in line:
+            assert "localhost" not in line, f"API_BASE_URL hardcodeado: {line.strip()}"
