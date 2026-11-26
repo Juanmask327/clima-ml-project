@@ -1,6 +1,6 @@
 # 📋 Registro de trabajo · Predicción Climática ML
 
-> **Última actualización:** 26/11/2026
+> **Última actualización:** 26/11/2026 (tras reinicio del equipo)
 > **Estado general:** ✅ Funcionando y desplegado · 26/26 tests · CI/CD en verde
 
 ---
@@ -10,7 +10,7 @@
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
 | App local | ✅ | http://localhost:8000/ |
-| App pública | ✅ | https://breakfast-physician-bacterial-sum.trycloudflare.com |
+| App pública | ✅ | https://counters-capitol-ago-institution.trycloudflare.com |
 | API REST | ✅ | `/predict` `/forecast` `/model/info` `/health` |
 | Frontend | ✅ | 3 pestañas verificadas en navegador real |
 | Tests | ✅ | 26/26 (`pytest backend/tests/`) |
@@ -184,7 +184,7 @@ El pipeline ya está preparado. Solo hay que dejar el CSV en
 ### URL pública actual
 
 ```
-https://breakfast-physician-bacterial-sum.trycloudflare.com
+https://counters-capitol-ago-institution.trycloudflare.com
 ```
 
 > ⚠️ **Temporal.** Túnel de Cloudflare sin cuenta: funciona mientras el

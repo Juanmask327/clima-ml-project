@@ -6,7 +6,7 @@ y con interfaz web en HTML + JavaScript puro.
 
 | | |
 |---|---|
-| 🌐 **App pública (temporal)** | https://breakfast-physician-bacterial-sum.trycloudflare.com |
+| 🌐 **App pública (temporal)** | https://counters-capitol-ago-institution.trycloudflare.com |
 | 📦 **Repositorio** | https://github.com/Juanmask327/clima-ml-project |
 | 📊 **Métricas (CV temporal)** | R² 0.931 · RMSE 1.114 °C · MAE 0.842 °C |
 | 🧪 **Tests** | 26/26 (`pytest backend/tests/`) |
