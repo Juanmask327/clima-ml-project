@@ -1,22 +1,13 @@
 # ============================================================
-# PREDICCIÓN CLIMÁTICA ML · Dependencias del proyecto
-# Compatible con Python 3.14 (versiones verificadas y
-# funcionando — instaladas el 26/11/2026)
+# PREDICCIÓN CLIMÁTICA ML · Dependencias de PRODUCCIÓN
 # ============================================================
+# Solo lo necesario para servir la API y el frontend.
+# Se usa en el despliegue en la nube (Render/Railway/Fly/Docker).
 #
-# INSTALACIÓN (recomendado: entorno virtual):
+#   pip install -r Requirements.txt
 #
-#   python -m venv .venv
-#   .venv\Scripts\activate        # Windows
-#   source .venv/bin/activate     # Mac/Linux
-#   pip install -r requirements.txt
-#
-# Entrenar el modelo:
-#   python backend/model/train_model.py
-#
-# Iniciar la API:
-#   cd backend
-#   uvicorn api.main:app --host 0.0.0.0 --port 8000
+# Iniciar:
+#   uvicorn api.main:app --app-dir backend --host 0.0.0.0 --port 8000
 # ============================================================
 
 # ── Backend ML ──────────────────────────────────────────────
@@ -31,12 +22,3 @@ joblib==1.6.0
 fastapi==0.165.0
 uvicorn[standard]==0.54.0
 pydantic==2.14.4
-
-# ── Análisis y visualización (notebooks) ───────────────────
-matplotlib==3.11.2
-seaborn==0.13.2
-jupyter==1.1.1
-
-# ── Testing ─────────────────────────────────────────────────
-pytest==9.2.0
-httpx==0.28.1        # cliente HTTP para tests de la API

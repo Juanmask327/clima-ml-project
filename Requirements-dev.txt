@@ -1,0 +1,18 @@
+# ============================================================
+# PREDICCIÓN CLIMÁTICA ML · Dependencias de DESARROLLO
+# ============================================================
+# Instala las de producción + las herramientas de análisis,
+# visualización y testing.
+#
+#   pip install -r Requirements-dev.txt
+# ============================================================
+-r Requirements.txt
+
+# ── Análisis y visualización (notebooks) ───────────────────
+matplotlib==3.11.2
+seaborn==0.13.2
+jupyter==1.1.1
+
+# ── Testing ─────────────────────────────────────────────────
+pytest==9.2.0
+httpx==0.28.1        # cliente HTTP para tests de la API

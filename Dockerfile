@@ -11,7 +11,7 @@ WORKDIR /app
 
 # Dependencias primero (capa cacheable)
 COPY Requirements.txt .
-RUN pip install --no-cache-dir -r Requirements.txt
+RUN pip install --no-cache-dir --no-compile -r Requirements.txt
 
 # Código
 COPY backend/ ./backend/

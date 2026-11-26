@@ -117,6 +117,10 @@ El proyecto está listo para desplegarse en cualquier plataforma.
 El frontend usa rutas relativas al origen, así que **no requiere
 ninguna configuración de URL**.
 
+> **Despliegue con un clic** (Render lee `render.yaml` automáticamente):
+>
+> [![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/Juanmask327/clima-ml-project)
+
 ### Opción A · Render (gratis, la más simple)
 
 1. Sube el repositorio a GitHub.
