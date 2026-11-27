@@ -16,7 +16,14 @@ from api.main import app
 
 client = TestClient(app)
 
+# Entrada del esquema REAL (sensor BME280): 3 variables + hora
 VALID_INPUT = {
+    "temp": 19.0, "hum": 68.0, "pres": 752.0, "hora": 14,
+}
+
+# Entrada del esquema sintético (compatibilidad hacia atrás):
+# wind/cloud/uv son opcionales y deben seguir siendo aceptados.
+LEGACY_INPUT = {
     "temp": 18.5, "hum": 65.0, "pres": 1013.0,
     "wind": 12.0, "cloud": 40.0, "uv": 5.0,
 }
@@ -62,6 +69,38 @@ def test_predict_ok():
     assert body["rmse"] > 0
     assert body["condition"]
     assert body["icon"]
+
+    # La hora usada como feature debe ser válida (0-23)
+    assert 0 <= body["hora_usada"] <= 23
+
+
+def test_predict_real_minimal_input():
+    """El esquema real (BME280) solo requiere temp/hum/pres."""
+    r = client.post("/predict", json={"temp": 19.0, "hum": 68.0, "pres": 752.0})
+    assert r.status_code == 200
+    assert -30 <= r.json()["pred_temp"] <= 60
+
+
+def test_predict_real_pressure_altitude():
+    """La presión de altura (~750 hPa) debe aceptarse."""
+    r = client.post("/predict", json={**VALID_INPUT, "pres": 752.9})
+    assert r.status_code == 200
+    assert -30 <= r.json()["pred_temp"] <= 60
+
+
+def test_predict_hora_param():
+    """La hora se usa como feature del ciclo diario."""
+    a = client.post("/predict", json={**VALID_INPUT, "hora": 3}).json()
+    b = client.post("/predict", json={**VALID_INPUT, "hora": 15}).json()
+    assert a["hora_usada"] == 3
+    assert b["hora_usada"] == 15
+
+
+def test_predict_legacy_input_compatible():
+    """wind/cloud/uv opcionales: el esquema sintético sigue aceptado."""
+    r = client.post("/predict", json=LEGACY_INPUT)
+    assert r.status_code == 200
+    assert -30 <= r.json()["pred_temp"] <= 60
 
 
 def test_predict_validation_error():
@@ -115,6 +154,9 @@ def test_model_info():
     assert body["feature_importances"], "Debe incluir importancia de features"
     assert body["hyperparameters"], "Debe incluir hiperparámetros de Optuna"
     assert "n_estimators" in body["hyperparameters"]
+
+    # El modo indica con qué datos se entrenó
+    assert body["mode"] in ("real", "sintetico")
 
 
 # ── Frontend estático ───────────────────────────────────────

@@ -20,9 +20,9 @@
   ══════════════════════════════════════════════ -->
   <div class="header">
     <h1>Predicción Climática por Micro-zona</h1>
-    <p>Modelo de Machine Learning · Gradient Boosting Regressor (GBR)</p>
+    <p>Modelo de Machine Learning · Stacking Ensemble (XGBoost + RF + Ridge)</p>
     <span class="model-badge">
-      <i class="ti ti-cpu"></i> XGBoost + Random Forest Ensemble
+      <i class="ti ti-cpu"></i> Entrenado con datos reales de estaciones BME280
     </span>
     <span class="api-status" id="api-status">● Comprobando API…</span>
   </div>
@@ -62,37 +62,22 @@
 
       <div class="card input-row">
         <label>Presión atm. (hPa)
-          <span class="val" id="v-pres">1013</span>
+          <span class="val" id="v-pres">750</span>
         </label>
-        <input type="range" data-var="pres" min="970" max="1050" value="1013" step="1"
+        <input type="range" data-var="pres" min="700" max="800" value="750" step="1"
                oninput="upd('v-pres',this.value,'');predict()">
       </div>
 
-      <div class="card input-row">
-        <label>Velocidad viento (km/h)
-          <span class="val" id="v-wind">12</span>
-        </label>
-        <input type="range" data-var="wind" min="0" max="120" value="12" step="1"
-               oninput="upd('v-wind',this.value,'');predict()">
-      </div>
-
-      <div class="card input-row">
-        <label>Nubosidad (%)
-          <span class="val" id="v-cloud">40%</span>
-        </label>
-        <input type="range" data-var="cloud" min="0" max="100" value="40" step="1"
-               oninput="upd('v-cloud',this.value,'%');predict()">
-      </div>
-
-      <div class="card input-row">
-        <label>Índice UV
-          <span class="val" id="v-uv">5</span>
-        </label>
-        <input type="range" data-var="uv" min="0" max="12" value="5" step="1"
-               oninput="upd('v-uv',this.value,'');predict()">
-      </div>
-
     </div><!-- /feature-grid -->
+
+    <div class="info-box" style="margin-bottom:1rem;">
+      <i class="ti ti-device-desktop-analytics" style="margin-top:1px;flex-shrink:0;"></i>
+      <span>
+        Modelo entrenado con <strong>datos reales</strong> de estaciones BME280
+        (temperatura, humedad y presión atmosférica). La hora del día también
+        se usa como variable: la predicción es para la <strong>siguiente hora</strong>.
+      </span>
+    </div>
 
     <div class="section-title">Importancia de las características (real · XGBoost + RF)</div>
     <div class="importance-grid" id="importance-grid">
@@ -129,7 +114,7 @@
     </div><!-- /importance-grid -->
 
     <button class="predict-btn" onclick="predict()">
-      <i class="ti ti-cpu"></i> Ejecutar predicción GBR
+      <i class="ti ti-cpu"></i> Ejecutar predicción (modelo real)
     </button>
 
     <!-- Panel de resultados -->
@@ -161,12 +146,12 @@
           <div class="ri-lab">Prob. lluvia</div>
         </div>
         <div class="result-item">
-          <div class="ri-val" id="r-viento">—</div>
-          <div class="ri-lab">Viento pred.</div>
-        </div>
-        <div class="result-item">
           <div class="ri-val" id="r-sensacion">—</div>
           <div class="ri-lab">Sensación térmica</div>
+        </div>
+        <div class="result-item">
+          <div class="ri-val" id="r-hora">—</div>
+          <div class="ri-lab">Hora usada (modelo)</div>
         </div>
       </div>
     </div><!-- /result-panel -->
@@ -205,13 +190,15 @@
     <div class="section-title">Arquitectura del modelo</div>
     <div class="card" style="margin-bottom:10px;">
       <div style="font-size:14px;font-weight:500;margin-bottom:6px;">
-        Ensemble: XGBoost + Random Forest + Ridge Regression
+        <span id="arch-name">XGBoost (Gradient Boosting)</span>
       </div>
-      <div style="font-size:13px;color:var(--color-text-secondary);line-height:1.7;">
-        El modelo combina tres algoritmos en un <strong>stacking ensemble</strong>.
-        XGBoost captura relaciones no lineales complejas entre variables meteorológicas.
-        Random Forest reduce la varianza y maneja valores atípicos.
-        Ridge Regression actúa como meta-learner para combinar predicciones con mínimo sobreajuste.
+      <div style="font-size:13px;color:var(--color-text-secondary);line-height:1.7;" id="arch-desc">
+        XGBoost captura relaciones no lineales entre las variables del sensor
+        (temperatura, humedad, presión) y el ciclo horario del día. La
+        arquitectura se eligió por validación cruzada temporal comparando
+        contra un stacking ensemble (XGB + RF + Ridge) y el baseline naive
+        de persistencia: con 381 horas de datos reales, XGBoost solo obtuvo
+        el menor RMSE.
       </div>
     </div>
 
@@ -219,44 +206,46 @@
     <div class="metrics-source" id="metrics-source">Cargando métricas…</div>
     <div class="metrics-row" style="margin-bottom:8px;">
       <div class="metric-card">
-        <div class="mc-val" style="color:#185FA5;" id="m-r2">0.931</div>
+        <div class="mc-val" style="color:#185FA5;" id="m-r2">0.826</div>
         <div class="mc-lab">R² Score</div>
       </div>
       <div class="metric-card">
-        <div class="mc-val" style="color:#0F6E56;" id="m-rmse">1.11°C</div>
+        <div class="mc-val" style="color:#0F6E56;" id="m-rmse">2.15°C</div>
         <div class="mc-lab">RMSE</div>
       </div>
       <div class="metric-card">
-        <div class="mc-val" style="color:#854F0B;" id="m-mae">0.84°C</div>
+        <div class="mc-val" style="color:#854F0B;" id="m-mae">1.39°C</div>
         <div class="mc-lab">MAE</div>
       </div>
     </div>
     <div class="metrics-row">
-      <div class="metric-card"><div class="mc-val" id="m-samples">8,760</div><div class="mc-lab">Muestras entrenamiento</div></div>
-      <div class="metric-card"><div class="mc-val" id="m-features">6</div><div class="mc-lab">Features usadas</div></div>
-      <div class="metric-card"><div class="mc-val" id="m-latency">87ms</div><div class="mc-lab">Latencia inferencia</div></div>
+      <div class="metric-card"><div class="mc-val" id="m-samples">381</div><div class="mc-lab">Horas de entrenamiento</div></div>
+      <div class="metric-card"><div class="mc-val" id="m-features">7</div><div class="mc-lab">Features usadas</div></div>
+      <div class="metric-card"><div class="mc-val" id="m-persist">2.15°C</div><div class="mc-lab">Baseline persistencia</div></div>
     </div>
 
-    <div class="section-title" style="margin-top:1.5rem;">Hiperparámetros principales (XGBoost)</div>
+    <div class="section-title" style="margin-top:1.5rem;">Hiperparámetros óptimos (XGBoost · Optuna 50 trials)</div>
     <div class="metrics-source" id="hp-source">Valores de referencia</div>
     <div class="card">
       <table>
-        <tr><td style="color:var(--color-text-secondary);">n_estimators</td>    <td id="hp-n_estimators">571</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">max_depth</td>        <td id="hp-max_depth">3</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">learning_rate</td>    <td id="hp-learning_rate">0.0512</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">subsample</td>        <td id="hp-subsample">0.6289</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">colsample_bytree</td> <td id="hp-colsample_bytree">0.6851</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">reg_alpha (L1)</td>   <td id="hp-reg_alpha">0.4619</td></tr>
-        <tr><td style="color:var(--color-text-secondary);">reg_lambda (L2)</td>  <td id="hp-reg_lambda">1.0292</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">n_estimators</td>    <td id="hp-n_estimators">459</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">max_depth</td>        <td id="hp-max_depth">4</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">learning_rate</td>    <td id="hp-learning_rate">0.0137</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">subsample</td>        <td id="hp-subsample">0.7967</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">colsample_bytree</td> <td id="hp-colsample_bytree">0.6913</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">reg_alpha (L1)</td>   <td id="hp-reg_alpha">0.4653</td></tr>
+        <tr><td style="color:var(--color-text-secondary);">reg_lambda (L2)</td>  <td id="hp-reg_lambda">1.4729</td></tr>
       </table>
     </div>
 
     <div class="info-box">
       <i class="ti ti-info-circle" style="margin-top:1px;flex-shrink:0;"></i>
       <span>
-        Optimización de hiperparámetros con Bayesian Search (Optuna).
-        Datos normalizados con StandardScaler. Pipeline compatible con scikit-learn.
-        Entrenamiento con datos de serie temporal horaria (1 año = 8,760 muestras).
+        Arquitectura elegida automáticamente por validación cruzada temporal:
+        XGBoost solo superó tanto al baseline de persistencia como al
+        stacking (XGB + RF + Ridge), que sobreajusta con 381 horas de datos.
+        Datos normalizados con StandardScaler, hiperparámetros por Bayesian
+        Search (Optuna), datos reales de estaciones BME280.
       </span>
     </div>
 

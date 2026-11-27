@@ -47,17 +47,21 @@ MODEL_PATH = Path(__file__).parent.parent / 'model' / 'clima_model.joblib'
 
 class WeatherInput(BaseModel):
     """Variables meteorológicas de entrada para la predicción."""
-    temp:  float = Field(..., ge=-10, le=45,   description="Temperatura actual (°C)")
+    temp:  float = Field(..., ge=-10, le=50,   description="Temperatura actual (°C)")
     hum:   float = Field(..., ge=0,   le=100,  description="Humedad relativa (%)")
-    pres:  float = Field(..., ge=970, le=1050, description="Presión atmosférica (hPa)")
-    wind:  float = Field(..., ge=0,   le=200,  description="Velocidad del viento (km/h)")
-    cloud: float = Field(..., ge=0,   le=100,  description="Nubosidad (%)")
-    uv:    float = Field(..., ge=0,   le=12,   description="Índice UV")
+    # Rango amplio: las estaciones están en altura (~750 hPa)
+    pres:  float = Field(..., ge=600, le=1100, description="Presión atmosférica (hPa)")
+    # Opcionales (compatibilidad con el esquema sintético anterior):
+    wind:  float | None = Field(None, description="Velocidad del viento (km/h) — opcional")
+    cloud: float | None = Field(None, description="Nubosidad (%) — opcional")
+    uv:    float | None = Field(None, description="Índice UV — opcional")
+    # Hora local (0-23). Si no se envía, se usa la hora del servidor.
+    hora:  int   | None = Field(None, ge=0, le=23, description="Hora local del día (0-23)")
 
     @field_validator('hum', 'cloud')
     @classmethod
     def clamp_percentage(cls, v):
-        return max(0.0, min(100.0, v))
+        return v if v is None else max(0.0, min(100.0, v))
 
 
 class PredictionOutput(BaseModel):
@@ -65,11 +69,11 @@ class PredictionOutput(BaseModel):
     pred_temp:   float  = Field(..., description="Temperatura predicha por el modelo (°C)")
     rain_prob:   float  = Field(..., description="Probabilidad de lluvia — heurística auxiliar (0-100)")
     sensacion:   float  = Field(..., description="Sensación térmica — estimación heurística (°C)")
-    wind_pred:   float  = Field(..., description="Viento estimado — heurística auxiliar (km/h)")
     confidence:  float  = Field(..., description="Confianza estimada — heurística, no calculada por el modelo (%)")
     rmse:        float  = Field(..., description="RMSE real de la validación cruzada del modelo (°C)")
     condition:   str    = Field(..., description="Descripción de la condición climática")
     icon:        str    = Field(..., description="Emoji del estado del tiempo")
+    hora_usada:  int    = Field(..., description="Hora del día usada como feature del modelo (0-23)")
     model_version: str  = Field(default="1.0.0")
     timestamp:   str    = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -96,6 +100,9 @@ class ModelInfo(BaseModel):
     mae:         float
     n_samples:   int
     version:     str
+    mode:        str = Field(default="sintetico", description="real (estaciones BME280) | sintetico")
+    arch:        str = Field(default="stacking", description="stacking | xgb (elegido por CV)")
+    persist_rmse: float = Field(default=0.0, description="RMSE del baseline naive 't+1h = t' (°C)")
     feature_importances: dict = Field(default_factory=dict, description="Importancia real por feature (%)")
     hyperparameters:     dict = Field(default_factory=dict, description="Mejores hiperparámetros (Optuna)")
 
@@ -123,10 +130,15 @@ try:
     _n_samples = int(_artifact.get('n_samples', 0))
     _importances = _artifact.get('feature_importances', {}) or {}
     _xgb_params  = _artifact.get('xgb_params', {}) or {}
+    _mode        = _artifact.get('mode', 'sintetico')
+    _arch        = _artifact.get('arch', 'stacking')
+    _persist_rmse = float(_artifact.get('persist_rmse') or 0.0)
+    _hum_mean    = float(_artifact.get('hum_mean') or 68.0)
     MODEL_LOADED = True
 except Exception as e:
     _pipeline, _features, _metrics = None, None, None
     _n_samples, _importances, _xgb_params = 0, {}, {}
+    _mode, _arch, _persist_rmse, _hum_mean = 'sintetico', 'stacking', 0.0, 68.0
     MODEL_LOADED = False
     print(f"⚠ Modelo no cargado: {e}")
 
@@ -137,27 +149,48 @@ except Exception as e:
 
 def build_features(inp: WeatherInput) -> np.ndarray:
     """
-    Construye el vector de features extendido que espera el modelo.
-    Debe ser idéntico al aplicado en train_model.py → feature_engineering().
+    Construye el vector de features que espera el modelo, según
+    el esquema con el que se entrenó (detectado del artefacto).
     """
+    if _mode == 'real':
+        # Esquema real (BME280): temperatura, humedad, presión y
+        # ciclo horario del día.
+        hora = inp.hora if inp.hora is not None else datetime.now().hour
+        hour_sin = np.sin(2 * np.pi * hora / 24)
+        hour_cos = np.cos(2 * np.pi * hora / 24)
+        hum_effect = (inp.hum - _hum_mean) / 100
+        heat_index = inp.temp * (1 + inp.hum / 200)
+        return np.array([[
+            inp.temp, inp.hum, inp.pres,
+            hour_sin, hour_cos, hum_effect, heat_index
+        ]])
+
+    # Esquema sintético (legacy): 6 variables base + derivadas
+    wind  = inp.wind  or 0.0
+    cloud = inp.cloud or 0.0
+    uv    = inp.uv    or 5.0
+
     pressure_delta = (inp.pres - 1013) / 40
     hum_effect     = (inp.hum  - 50)   / 100
-    cloud_effect   = inp.cloud / 100
-    wind_chill     = -(inp.wind - 20) * 0.15 if inp.wind > 20 else 0.0
+    cloud_effect   = cloud / 100
+    wind_chill     = -(wind - 20) * 0.15 if wind > 20 else 0.0
     heat_index     = inp.temp * (1 + inp.hum / 200)
 
     return np.array([[
-        inp.temp, inp.hum, inp.pres, inp.wind, inp.cloud, inp.uv,
+        inp.temp, inp.hum, inp.pres, wind, cloud, uv,
         pressure_delta, hum_effect, cloud_effect, wind_chill, heat_index
     ]])
 
 
-def classify_condition(pred_temp: float, rain_prob: float, cloud: float, wind: float):
+def classify_condition(pred_temp: float, rain_prob: float,
+                       cloud: float | None, wind: float | None):
     """Clasifica la condición climática en descripción + emoji."""
     if rain_prob > 70:  return 'Lluvia probable', '🌧️'
     if rain_prob > 45:  return 'Parcialmente nublado con posible lluvia', '⛅'
-    if cloud > 60:      return 'Nublado', '☁️'
-    if wind > 40:       return 'Vientoso', '💨'
+    if cloud is not None and cloud > 60:
+        return 'Nublado', '☁️'
+    if wind is not None and wind > 40:
+        return 'Vientoso', '💨'
     if pred_temp > 32:  return 'Caluroso y seco', '🌡️'
     if pred_temp < 5:   return 'Frío · posible helada', '🌨️'
     return 'Despejado y soleado', '☀️'
@@ -217,9 +250,9 @@ def predict(inp: WeatherInput):
     Ejecuta la predicción climática con el modelo GBR Ensemble.
 
     Recibe las variables meteorológicas de la micro-zona y retorna:
-    - Temperatura predicha (°C)      → del modelo ML
+    - Temperatura predicha (°C)      → del modelo ML (t+1 hora)
     - RMSE (°C)                      → real, de la validación cruzada
-    - Probabilidad de lluvia, sensación, viento y confianza
+    - Probabilidad de lluvia, sensación y confianza
       → estimaciones heurísticas auxiliares (NO salen del modelo)
     """
     t0 = time.perf_counter()
@@ -236,16 +269,27 @@ def predict(inp: WeatherInput):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en predicción: {str(e)}")
 
-    # ── Heurísticas auxiliares (no son salida del modelo ML) ──
-    pressure_delta = (inp.pres - 1013) / 40
-    hum_effect     = (inp.hum  - 50)   / 100
-    cloud_effect   = inp.cloud / 100
-    wind_chill     = -(inp.wind - 20) * 0.15 if inp.wind > 20 else 0.0
+    # Hora usada como feature (transparencia para el usuario)
+    hora_usada = inp.hora if inp.hora is not None else datetime.now().hour
 
-    rain_prob  = max(0, min(100, round(inp.hum * 0.6 + inp.cloud * 0.4 - (inp.pres - 970) * 0.3)))
-    sensacion  = round(pred_temp - wind_chill * 0.5 - hum_effect * 2, 1)
-    wind_pred  = round(inp.wind * (1 + (1013 - inp.pres) / 300), 1)
-    confidence = max(72, min(97, round(94 - abs(pressure_delta) * 5 - cloud_effect * 8)))
+    # ── Heurísticas auxiliares (no son salida del modelo ML) ──
+    if _mode == 'real':
+        # Sin viento/nubosidad: la humedad es el principal proxy
+        rain_prob  = max(0, min(100, round((inp.hum - 40) * 1.6)))
+        hum_effect = (inp.hum - _hum_mean) / 100
+        sensacion  = round(pred_temp - hum_effect * 2, 1)
+        confidence = max(72, min(97, round(94 - abs(inp.hum - 50) / 8)))
+    else:
+        wind  = inp.wind  or 0.0
+        cloud = inp.cloud or 0.0
+        pressure_delta = (inp.pres - 1013) / 40
+        hum_effect     = (inp.hum  - 50)   / 100
+        cloud_effect   = cloud / 100
+        wind_chill     = -(wind - 20) * 0.15 if wind > 20 else 0.0
+
+        rain_prob  = max(0, min(100, round(inp.hum * 0.6 + cloud * 0.4 - (inp.pres - 970) * 0.3)))
+        sensacion  = round(pred_temp - wind_chill * 0.5 - hum_effect * 2, 1)
+        confidence = max(72, min(97, round(94 - abs(pressure_delta) * 5 - cloud_effect * 8)))
 
     # RMSE REAL de la validación cruzada del modelo (no una fórmula)
     rmse = round(float(_metrics['rmse_mean']), 2)
@@ -253,17 +297,17 @@ def predict(inp: WeatherInput):
     condition, icon = classify_condition(pred_temp, rain_prob, inp.cloud, inp.wind)
 
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
-    print(f"[predict] {pred_temp}°C | conf={confidence}% | {latency_ms}ms")
+    print(f"[predict:{_mode}] {pred_temp}°C (hora {hora_usada}) | conf={confidence}% | {latency_ms}ms")
 
     return PredictionOutput(
         pred_temp=pred_temp,
         rain_prob=float(rain_prob),
         sensacion=sensacion,
-        wind_pred=wind_pred,
         confidence=float(confidence),
         rmse=rmse,
         condition=condition,
         icon=icon,
+        hora_usada=int(hora_usada),
     )
 
 
@@ -286,6 +330,12 @@ def forecast(inp: WeatherInput, zona: str = "micro-zona-1"):
     today    = datetime.now(timezone.utc).date()
     rng      = np.random.default_rng(42)   # semilla fija → resultados reproducibles
 
+    # Probabilidad base de lluvia según el modo (heurística)
+    if _mode == 'real':
+        rain_base = max(0, min(100, (inp.hum - 40) * 1.6))
+    else:
+        rain_base = max(0, min(100, inp.hum * 0.6 + (inp.cloud or 0) * 0.4))
+
     forecast_list = []
     for i in range(7):
         day_date = today + timedelta(days=i)
@@ -295,7 +345,7 @@ def forecast(inp: WeatherInput, zona: str = "micro-zona-1"):
         variation = np.sin(i * 0.8) * 3 + np.cos(i * 1.2) * 2
         hi = round(base_temp + variation, 1)
         lo = round(hi - 6 - float(rng.uniform(0, 3)), 1)
-        rain = max(0, min(100, round(inp.hum * 0.6 + inp.cloud * 0.4 - i * 2)))
+        rain = max(0, min(100, round(rain_base - i * 2)))
 
         icon = ('🌧️' if rain > 70 else '⛅' if rain > 45 else
                 '☀️' if i % 3 == 0 else '🌤️')
@@ -318,13 +368,18 @@ def model_info():
         raise HTTPException(status_code=503, detail="Modelo no disponible.")
 
     return ModelInfo(
-        model_type="Stacking Ensemble: XGBoost + Random Forest + Ridge",
+        model_type=(("Stacking Ensemble (XGB + RF + Ridge)" if _arch == 'stacking'
+                     else "XGBoost (seleccionado por CV)")
+                    + (" · datos reales de estaciones BME280" if _mode == 'real' else "")),
         features=_features,
         r2_score=round(_metrics['r2_mean'], 4),
         rmse=round(_metrics['rmse_mean'], 4),
         mae=round(_metrics['mae_mean'], 4),
-        n_samples=_n_samples if _n_samples else 8760,
+        n_samples=_n_samples if _n_samples else 0,
         version="1.0.0",
+        mode=_mode,
+        arch=_arch,
+        persist_rmse=round(_persist_rmse, 4),
         feature_importances=_importances,
         hyperparameters=_xgb_params,
     )

@@ -1,7 +1,7 @@
 # 📋 Registro de trabajo · Predicción Climática ML
 
-> **Última actualización:** 26/11/2026 (tras reinicio del equipo)
-> **Estado general:** ✅ Funcionando y desplegado · 26/26 tests · CI/CD en verde
+> **Última actualización:** 27/11/2026
+> **Estado general:** ✅ Modelo entrenado con DATOS REALES de estaciones · 30/30 tests · desplegado
 
 ---
 
@@ -10,46 +10,57 @@
 | Elemento | Estado | Detalle |
 |----------|--------|---------|
 | App local | ✅ | http://localhost:8000/ |
-| App pública | ✅ | https://counters-capitol-ago-institution.trycloudflare.com |
-| API REST | ✅ | `/predict` `/forecast` `/model/info` `/health` |
-| Frontend | ✅ | 3 pestañas verificadas en navegador real |
-| Tests | ✅ | 26/26 (`pytest backend/tests/`) |
-| Docker | ✅ | Contenedor `healthy` + healthcheck |
-| CI/CD | ✅ | Tests + imagen en GHCR |
-| Git | ✅ | 8 commits, árbol limpio, todo pusheado |
+| App pública | ✅ | Túnel de Cloudflare (URL nueva en cada sesión; ver readme) |
+| Modelo | ✅ | **REAL**: 381 horas de 3 estaciones BME280, XGBoost |
+| API REST | ✅ | `/predict` `/forecast` `/model/info` `/health` (esquema temp/hum/pres + hora) |
+| Frontend | ✅ | 3 sliders reales + hora automática del navegador |
+| Tests | ✅ | 30/30 (`pytest backend/tests/`) |
+| Docker | ✅ | Imagen con modelo real embebido + healthcheck |
+| CI/CD | ✅ | Tests + imagen en GHCR (GitHub Actions) |
+| Git | ✅ | Commits al día, árbol limpio |
 
 **Repositorio:** https://github.com/Juanmask327/clima-ml-project
 
 ---
 
-## 2. Métricas actuales del modelo
+## 2. Métricas actuales del modelo (DATOS REALES)
 
 ```
 Validación cruzada temporal (TimeSeriesSplit, 5 folds, sin shuffle)
 
-R²   : 0.9309 ± 0.0453
-RMSE : 1.1138 ± 0.3587 °C
-MAE  : 0.8417 ± 0.1976 °C
+R²   : 0.8262 ± 0.1054
+RMSE : 2.1466 ± 0.9874 °C
+MAE  : 1.3949 ± 0.6729 °C
 ```
+
+**Selección de arquitectura (misma CV):**
+
+| Arquitectura | RMSE | R² |
+|--------------|------|-----|
+| **XGBoost (elegido)** | **2.1466** | **0.8262** |
+| Stacking (XGB+RF+Ridge) | 2.6215 | 0.7154 |
+| Persistencia (t+1h = t) | 2.1537 | — |
 
 **Hiperparámetros óptimos** (Optuna, 50 trials):
 
 | Parámetro | Valor |
 |-----------|-------|
-| n_estimators | 571 |
-| max_depth | 3 |
-| learning_rate | 0.05124 |
-| subsample | 0.6289 |
-| colsample_bytree | 0.6851 |
-| reg_alpha (L1) | 0.4619 |
-| reg_lambda (L2) | 1.0292 |
+| n_estimators | 459 |
+| max_depth | 4 |
+| learning_rate | 0.01368 |
+| subsample | 0.7967 |
+| colsample_bytree | 0.6913 |
+| reg_alpha (L1) | 0.4653 |
+| reg_lambda (L2) | 1.4729 |
 
-**Importancia de features** (%): `temp_actual` 81.3 · `heat_index` 15.3 ·
-`indice_uv` 1.1 · `nubosidad` 0.5 · `cloud_effect` 0.5 · `humedad` 0.4
+**Importancia de features** (%): `heat_index` 40.1 · `temp_actual` 33.6 ·
+`humedad` 11.0 · `hum_effect` 4.9 · `presion` 4.3 · `hour_cos` 4.3 ·
+`hour_sin` 1.9
 
-> ⚠️ **Estas métricas son de datos SINTÉTICOS.** El target deriva de
-> `temp_actual`, de ahí el 81% de importancia y el R² alto. Con datos
-> reales el R² **bajará** — es lo correcto y esperable para la tesis.
+> ✅ El modelo supera al baseline de persistencia (2.1466 < 2.1537),
+> requisito mínimo de un predictor de temperatura. El margen es
+> estrecho por la cobertura limitada (17 días de muestreo en 19
+> meses). Capturar más días debería ampliarlo.
 
 ---
 
@@ -116,54 +127,64 @@ a que el canvas tenga tamaño real (`whenCanvasReady()`).
 
 ---
 
-## 4. Componentes del modelo
+## 4. Componentes del modelo (actual, datos reales)
 
 ```
-Stacking Ensemble
-├── Base learner 1 : XGBoost (GBR)      n_estimators=571, max_depth=3
-├── Base learner 2 : Random Forest      n_estimators=300, max_depth=8
-└── Meta-learner   : Ridge Regression   alpha=1.0
+XGBoost (Gradient Boosting) — elegido automáticamente por CV
+├── n_estimators=459, max_depth=4, learning_rate=0.0137
+├── Optimizado por Optuna (50 trials)
+└── Selección por TimeSeriesSplit: XGB (2.147) < persistencia (2.154) < stacking (2.622)
 ```
 
-**Features (11):** `temp_actual` `humedad` `presion` `viento` `nubosidad`
-`indice_uv` `pressure_delta` `hum_effect` `cloud_effect` `wind_chill`
-`heat_index`
+**Features (7):** `temp_actual` `humedad` `presion` `hour_sin`
+`hour_cos` `hum_effect` `heat_index`
 
-**Flujo de entrenamiento:** carga CSV → feature engineering → Optuna
-(50 trials, TimeSeriesSplit) → stacking → evaluación CV → serialización
+**Flujo de entrenamiento:** carga CSV real → feature engineering
+(ciclo horario) → Optuna (50 trials, TimeSeriesSplit) → selección de
+arquitectura (XGB vs stacking, misma CV) → evaluación → serialización
 `.joblib` con `pipeline`, `features`, `metrics`, `n_samples`,
-`feature_importances`, `xgb_params`.
+`feature_importances`, `xgb_params`, `mode`, `arch`, `persist_rmse`,
+`hum_mean`.
+
+**Esquema sintético (legacy):** sigue soportado (11 features con
+viento/nubosidad/UV); el pipeline lo detecta y usa `temp_pred`.
 
 ---
 
-## 5. Datos reales de estaciones (implementado)
+## 5. Datos reales de estaciones (INTEGRADO y funcionando)
 
-El pipeline ya está preparado. Solo hay que dejar el CSV en
-`backend/data/weather_data.csv` y re-entrenar.
+Los dumps crudos de las estaciones Raspberry Pi (sensor **BME280**:
+temperatura, humedad, presión — NO mide viento/nubosidad/UV) se
+procesan con dos scripts:
 
-### Columnas requeridas
+| Script | Función |
+|--------|---------|
+| `data/parse_stations.py` | Unifica los 4 dumps (3 SQL phpMyAdmin + 1 CSV de una línea) → `weather_data_real.csv` (432,829 registros) |
+| `data/prepare_real_dataset.py` | Agrega por hora + target `temp_next` (solo si la hora siguiente es contigua) → `weather_data.csv` (381 filas) |
 
-| Interna | Significado | Unidad |
-|---------|-------------|--------|
-| `temp_actual` | Temperatura observada | °C |
-| `humedad` | Humedad relativa | % |
-| `presion` | Presión atmosférica | hPa |
-| `viento` | Velocidad del viento | km/h |
-| `nubosidad` | Nubosidad | % |
-| `indice_uv` | Índice UV | 0–12 |
-| `temp_pred` | *(opcional)* temp de la siguiente hora | °C |
+### Cobertura real de muestreo
 
-### Adaptaciones automáticas
+| Estación | Registros | Horas | Periodo |
+|----------|-----------|-------|---------|
+| rasberry_1 | 191,106 | 76 | 2023-05-31 → 2024-12-26 |
+| rasberry_3 | 113,831 | 124 | 2023-05-31 → 2024-12-30 |
+| rasberry_4 | 127,892 | 181 | 2024-12-17 → 2024-12-31 |
 
-- **Alias de columnas** — `temperatura`/`temp`/`tamb`, `HR`/`rh`,
-  `pressure`/`p_atm`/`bar`, `wind_speed`/`vv`, `cloud`, `uv_index`…
-- **Unidades** — con columna `presion_unit`/`temp_unit` (`kPa`, `Pa`,
-  `bar`, `F`, `K`…) se convierte a hPa y °C
-- **Target** — si falta `temp_pred`, se construye con `shift(-1)`
-- **Limpieza** — descarta NaN, no-numéricos y outliers fuera de rango
-  físico (humedad 250%, presión 5000 hPa…)
-- **Orden temporal** — las filas nunca se reordenan
-- **Errores accionables** — indica qué columna falta y qué alias acepta
+> Las estaciones registran cada 5 s pero **no operaron continuo**:
+> los datos se concentran en 17 días de muestreo intenso entre mayo
+> 2023 y diciembre 2024. Presión ~750 hPa → estación en altura.
+
+### Columnas del dataset de entrenamiento
+
+`estacion, time, temp_actual, humedad, presion, temp_next`
+
+### Para re-entrenar (todo el pipeline)
+
+```bash
+python backend/data/parse_stations.py        # crudos → weather_data_real.csv
+python backend/data/prepare_real_dataset.py  # → weather_data.csv horario
+python backend/model/train_model.py          # entrena (detecta modo real)
+```
 
 ---
 
@@ -199,18 +220,26 @@ https://counters-capitol-ago-institution.trycloudflare.com
 clima_ml_project/
 ├── backend/
 │   ├── model/
-│   │   ├── train_model.py       # entrenamiento + load_real_data() + Optuna
-│   │   └── clima_model.joblib   # modelo entrenado (10.11 MB, versionado)
+│   │   ├── train_model.py       # entrenamiento: esquema real y sintético,
+│   │   │                        #   Optuna + selección de arquitectura por CV
+│   │   └── clima_model.joblib   # modelo REAL entrenado (versionado)
 │   ├── api/
 │   │   └── main.py              # FastAPI: /predict /forecast /model/info /health
 │   ├── data/
-│   │   └── weather_data.csv     # ← aquí va el CSV de la estación real
+│   │   ├── estacion_1.sql       # dumps crudos de las estaciones (evidencia)
+│   │   ├── estacion_2.sql
+│   │   ├── estacion4.sql
+│   │   ├── estacion3-30-12-2024_actua.csv
+│   │   ├── parse_stations.py    # crudos → weather_data_real.csv
+│   │   ├── prepare_real_dataset.py  # → dataset horario de entrenamiento
+│   │   ├── weather_data.csv     # 381 horas reales (dataset activo)
+│   │   └── weather_data_synth.csv   # respaldo del sintético original
 │   └── tests/
 │       ├── conftest.py
-│       ├── test_api.py          # 12 tests de la API
-│       └── test_data_loading.py # 14 tests del cargador de datos
+│       ├── test_api.py          # 16 tests de la API (esquema real + legacy)
+│       └── test_data_loading.py # 14 tests del cargador legacy
 ├── frontend/
-│   ├── index.html
+│   ├── index.html              # 3 sliders BME280 + hora automática
 │   ├── css/styles.css
 │   └── js/
 │       ├── model.js             # fetch a la API + respaldo local
@@ -253,23 +282,29 @@ git add -A && git commit -m "..." && git push origin master
 
 ## 9. Pendientes
 
+### ✅ Completado en esta sesión
+
+- [x] **Integración de datos reales de estaciones** — parser de dumps,
+      dataset horario, re-entrenamiento y despliegue del modelo REAL
+- [x] **Comparar modelos con el mismo CV** — XGBoost vs stacking vs
+      persistencia (XGB gana: 2.147 < 2.154 < 2.622)
+- [x] **Métricas reales en readme y frontend**
+
 ### 🔴 Requiere tu intervención
 
 - [ ] **URL permanente** — iniciar sesión en Render / Railway / Fly.io
       (necesito tu contraseña o un `FLY_API_TOKEN` / `RENDER_API_KEY`).
       El repo ya está listo para despliegue con un clic.
-- [ ] **CSV de la estación real** — colocarlo en
-      `backend/data/weather_data.csv` y re-entrenar. Revisar el impacto
-      en las métricas del readme.
+- [ ] **Capturar más días de datos** — el margen sobre el baseline de
+      persistencia es estrecho (2.147 vs 2.154) por la cobertura de
+      solo 17 días. Más días de muestreo continuo lo ampliarían.
 
 ### 🟡 Opcional (para la tesis)
 
 - [ ] **SHAP / explicabilidad** — para la sección de discusión
 - [ ] **Notebook de EDA** — análisis exploratorio de los datos reales
 - [ ] **Validación con holdout** — reservar un periodo para test final
-- [ ] **Comparar modelos** — XGBoost vs RF vs Stacking (para justificar
-      la elección del ensemble)
-- [ ] **Actualizar métricas del readme** tras entrenar con datos reales
+- [ ] **Modelo LSTM** — comparar contra XGBoost con más datos
 
 ### 🔵 Técnico
 

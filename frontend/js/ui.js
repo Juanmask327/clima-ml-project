@@ -100,12 +100,11 @@ function getInputs() {
     return Number.isFinite(v) ? v : def;
   };
   return {
-    temp:  pick('temp',  0, 18),
+    temp:  pick('temp',  0, 19),
     hum:   pick('hum',   1, 65),
-    pres:  pick('pres',  2, 1013),
-    wind:  pick('wind',  3, 12),
-    cloud: pick('cloud', 4, 40),
-    uv:    pick('uv',    5, 5)
+    pres:  pick('pres',  2, 750),
+    // Hora local del navegador: las estaciones registran en hora local
+    hora:  new Date().getHours()
   };
 }
 
@@ -154,11 +153,11 @@ async function predict() {
   setEl('res-desc',     r.desc);
   setEl('res-conf',     `${r.conf}%`);
   setEl('r-lluvia',     `${r.rainProb}%`);
-  setEl('r-viento',     `${r.windPred} km/h`);
   setEl('r-sensacion',  `${r.sensacion}°C`);
+  setEl('r-hora',       `${String(r.horaUsada).padStart(2, '0')}:00`);
   setEl('res-rmse',     `±${r.rmse}°C`);
   setEl('res-source',   source === 'api'
-    ? 'Predicción del modelo ML (XGBoost + RF + Ridge)'
+    ? 'Predicción del modelo ML entrenado con datos reales de estaciones'
     : 'Simulación local — inicia la API para usar el modelo real');
 
   // ── Barra de confianza animada ───────────────────────────
@@ -304,16 +303,18 @@ function renderForecastChart(labels, tempsHi, tempsLo) {
 
 // Respaldo local si la API no responde (valores reales del último entrenamiento)
 const FALLBACK_MODEL_INFO = {
-  r2_score: 0.9309, rmse: 1.1138, mae: 0.8417, n_samples: 8760,
+  r2_score: 0.8262, rmse: 2.1466, mae: 1.3949, n_samples: 381,
   feature_importances: {
-    temp_actual: 81.3, heat_index: 15.3, indice_uv: 1.1,
-    nubosidad: 0.5, humedad: 0.4, viento: 0.2
+    heat_index: 40.1, temp_actual: 33.6, humedad: 11.0,
+    hum_effect: 4.9, presion: 4.3, hour_cos: 4.3
   },
   hyperparameters: {
-    n_estimators: 571, max_depth: 3, learning_rate: 0.0512,
-    subsample: 0.6289, colsample_bytree: 0.6851,
-    reg_alpha: 0.4619, reg_lambda: 1.0292
-  }
+    n_estimators: 459, max_depth: 4, learning_rate: 0.0137,
+    subsample: 0.7967, colsample_bytree: 0.6913,
+    reg_alpha: 0.4653, reg_lambda: 1.4729
+  },
+  persist_rmse: 2.1537,
+  arch: 'xgb'
 };
 
 const FEATURE_LABELS = {
@@ -322,7 +323,8 @@ const FEATURE_LABELS = {
   nubosidad: 'Nubosidad', indice_uv: 'Índice UV',
   pressure_delta: 'Δ Presión', hum_effect: 'Efecto humedad',
   cloud_effect: 'Efecto nubosidad', wind_chill: 'Wind chill',
-  heat_index: 'Índice de calor'
+  heat_index: 'Índice de calor', hour_sin: 'Ciclo diario (sin)',
+  hour_cos: 'Ciclo diario (cos)'
 };
 
 const HP_ROWS = [
@@ -362,6 +364,10 @@ async function loadModelInfo() {
   setEl('m-rmse',     `${info.rmse.toFixed(2)}°C`);
   setEl('m-mae',      `${info.mae.toFixed(2)}°C`);
   setEl('m-samples',  info.n_samples.toLocaleString('es'));
+  setEl('m-features', (info.features || []).length);
+  if (info.persist_rmse) {
+    setEl('m-persist', `${info.persist_rmse.toFixed(2)}°C`);
+  }
 
   // ── Importancia de features (top 6 reales, cualquier feature) ──
   const imp = info.feature_importances || {};

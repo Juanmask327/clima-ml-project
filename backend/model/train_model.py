@@ -281,6 +281,47 @@ FEATURES_EXT = FEATURES + ['pressure_delta', 'hum_effect', 'cloud_effect', 'wind
 
 
 # ============================================================
+#  3b. ESQUEMA DE DATOS REALES (estaciones BME280)
+# ============================================================
+# Las estaciones Raspberry Pi solo miden temperatura, humedad y
+# presión. El dataset horario real (weather_data.csv generado por
+# data/prepare_real_dataset.py) trae:
+#     estacion, time, temp_actual, humedad, presion, temp_next
+#
+# El modelo aprende: "dadas las condiciones actuales y la hora del
+# día, ¿cuál será la temperatura en la siguiente hora?".
+# ============================================================
+
+REAL_TARGET   = 'temp_next'
+REAL_FEATURES = ['temp_actual', 'humedad', 'presion']
+
+
+def feature_engineering_real(df: pd.DataFrame) -> pd.DataFrame:
+    """Features derivadas del dataset real (solo BME280 + hora)."""
+    df = df.copy()
+    t = pd.to_datetime(df['time'])
+    hora = t.dt.hour + t.dt.minute / 60.0
+
+    # Ciclo diario codificado (sin discontinuidad 23h → 0h)
+    df['hour_sin'] = np.sin(2 * np.pi * hora / 24)
+    df['hour_cos'] = np.cos(2 * np.pi * hora / 24)
+
+    # Efectos de humedad
+    df['hum_effect'] = (df['humedad'] - df['humedad'].mean()) / 100
+    df['heat_index'] = df['temp_actual'] * (1 + df['humedad'] / 200)
+    return df
+
+
+REAL_DERIVED    = ['hour_sin', 'hour_cos', 'hum_effect', 'heat_index']
+REAL_FEATURES_EXT = REAL_FEATURES + REAL_DERIVED
+
+
+def es_dataset_real(df: pd.DataFrame) -> bool:
+    """Detecta si el CSV cargado es del esquema real (BME280)."""
+    return REAL_TARGET in df.columns and 'temp_actual' in df.columns
+
+
+# ============================================================
 #  3. OPTIMIZACIÓN BAYESIANA DE HIPERPARÁMETROS (Optuna)
 # ============================================================
 
@@ -357,18 +398,30 @@ def build_ensemble(xgb_params: dict) -> StackingRegressor:
 
 
 # ============================================================
-#  5. PIPELINE COMPLETO (Scaler + Ensemble)
+#  5. PIPELINE COMPLETO (Scaler + Modelo)
 # ============================================================
 
-def build_pipeline(xgb_params: dict) -> Pipeline:
-    """
-    Pipeline scikit-learn que integra:
-      StandardScaler → Stacking Ensemble
-    Permite llamar .predict() directamente con datos sin escalar.
-    """
+def build_pipeline_stacking(xgb_params: dict) -> Pipeline:
+    """Pipeline con el Stacking Ensemble completo (XGB + RF + Ridge)."""
     return Pipeline([
         ('scaler',   StandardScaler()),
         ('ensemble', build_ensemble(xgb_params))
+    ])
+
+
+def build_pipeline_xgb(xgb_params: dict) -> Pipeline:
+    """
+    Pipeline con XGBoost solo.
+
+    Con datasets pequeños (p. ej. el real de 381 horas), el Random
+    Forest del stacking sobreajusta y degrada el RMSE frente a la
+    persistencia. Este pipeline más simple es la alternativa que
+    main() evalúa y compara por validación cruzada.
+    """
+    return Pipeline([
+        ('scaler', StandardScaler()),
+        ('model',  XGBRegressor(**{**xgb_params, 'verbosity': 0,
+                                   'random_state': 42, 'n_jobs': 2}))
     ])
 
 
@@ -416,28 +469,40 @@ def evaluate_model(pipeline: Pipeline, X: np.ndarray, y: np.ndarray) -> dict:
 
 def extract_feature_importances(pipeline: Pipeline, features: list) -> dict:
     """
-    Extrae la importancia media de cada feature promediando las
-    importancias (gain / impurity) de los base learners del
-    Stacking Ensemble (XGBoost + Random Forest), normalizadas
-    a porcentaje (suman 100).
+    Extrae la importancia media de cada feature:
+      - Stacking: promedio de los base learners (XGBoost gain +
+        Random Forest impurity), cada uno normalizado antes de
+        promediar (escala distinta).
+      - XGBoost solo: feature_importances_ directamente.
+    Retorna porcentajes que suman 100.
     """
-    ensemble = pipeline.named_steps['ensemble']
-    imp = np.zeros(len(features), dtype=float)
+    model = pipeline.named_steps.get('model') or pipeline.named_steps.get('ensemble')
 
-    # Normaliza cada base learner por separado (XGBoost usa "gain"
-    # y Random Forest "impurity", escalas distintas) y luego promedia.
-    # NOTA: en sklearn >= 1.x, StackingRegressor.estimators_ es una
-    # lista de estimadores (sin tuplas nombre/estimador).
-    for est in ensemble.estimators_:
-        e = np.asarray(est.feature_importances_, dtype=float)
-        s = e.sum()
+    if hasattr(model, 'estimators_') and hasattr(model, 'final_estimator_'):
+        # Stacking: promedio de base learners normalizados.
+        # NOTA: en sklearn >= 1.x, StackingRegressor.estimators_ es una
+        # lista de estimadores (sin tuplas nombre/estimador).
+        imp = np.zeros(len(features), dtype=float)
+        n = 0
+        for est in model.estimators_:
+            if not hasattr(est, 'feature_importances_'):
+                continue
+            e = np.asarray(est.feature_importances_, dtype=float)
+            s = e.sum()
+            if s > 0:
+                e = e / s
+            imp += e
+            n += 1
+        imp /= max(n, 1)
+    elif hasattr(model, 'feature_importances_'):
+        imp = np.asarray(model.feature_importances_, dtype=float)
+        s = imp.sum()
         if s > 0:
-            e = e / s
-        imp += e
+            imp = imp / s
+    else:
+        return {}
 
-    imp /= len(ensemble.estimators_)
-    imp = imp * 100   # ya está normalizado a 100
-
+    imp = imp * 100
     return {f: round(float(v), 1) for f, v in zip(features, imp)}
 
 
@@ -452,56 +517,109 @@ def main():
 
     # ── Datos ───────────────────────────────────────────────
     print("\n[1/5] Cargando datos...")
+    modo = 'sintetico'
+    df = None
     if DATA_PATH.exists():
-        try:
-            df = load_real_data(DATA_PATH)
-            print(f"  ✓ Cargados {len(df):,} registros válidos desde {DATA_PATH}")
-            print(f"    Columnas: {list(df.columns)}")
-            if TARGET not in pd.read_csv(DATA_PATH, nrows=0).columns:
-                print("    (target 'temp_pred' construido con shift(-1): "
-                      "temperatura de la siguiente hora)")
-        except Exception as e:
-            print(f"  ✗ Error leyendo los datos: {e}")
-            print("  ⚠ Cayendo a datos sintéticos...")
-            df = generate_synthetic_data(n_samples=8760)
+        df_raw = pd.read_csv(DATA_PATH)
+
+        # Esquema REAL (estaciones BME280, preparado por
+        # data/prepare_real_dataset.py): estacion, time,
+        # temp_actual, humedad, presion, temp_next
+        if es_dataset_real(df_raw):
+            df = df_raw.copy()
+            modo = 'real'
+            print(f"  ✓ Dataset REAL de estaciones: {len(df):,} horas")
+        else:
+            # Esquema sintético o CSV de estación con alias
+            try:
+                df = load_real_data(DATA_PATH)
+                print(f"  ✓ Cargados {len(df):,} registros válidos desde {DATA_PATH}")
+            except Exception as e:
+                print(f"  ✗ Error leyendo los datos: {e}")
+                print("  ⚠ Cayendo a datos sintéticos...")
+                df = None
     else:
-        print("  ⚠ Archivo de datos no encontrado. Generando datos sintéticos...")
+        print("  ⚠ Archivo de datos no encontrado.")
+
+    if df is None:
         df = generate_synthetic_data(n_samples=8760)
+        modo = 'sintetico'
         DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(DATA_PATH, index=False)
         print(f"  ✓ Generados {len(df):,} registros → {DATA_PATH}")
 
-    # ── Feature engineering ─────────────────────────────────
-    print("\n[2/5] Feature engineering...")
-    df = feature_engineering(df)
-    X = df[FEATURES_EXT].values
-    y = df[TARGET].values
-    print(f"  ✓ Features: {FEATURES_EXT}")
+    # ── Feature engineering (según el esquema) ───────────────
+    print(f"\n[2/5] Feature engineering (modo: {modo})...")
+    if modo == 'real':
+        df = feature_engineering_real(df)
+        features_ext = REAL_FEATURES_EXT
+        target = REAL_TARGET
+    else:
+        df = feature_engineering(df)
+        features_ext = FEATURES_EXT
+        target = TARGET
+
+    X = df[features_ext].values
+    y = df[target].values
+    print(f"  ✓ Features: {features_ext}")
     print(f"  ✓ Shape: X={X.shape}, y={y.shape}")
 
     # ── Optimización de hiperparámetros ─────────────────────
-    print("\n[3/5] Optimización bayesiana (Optuna) — 50 trials...")
-    xgb_params = optimize_xgboost(X, y, n_trials=50)
+    n_trials = 50
+    print(f"\n[3/5] Optimización bayesiana (Optuna) — {n_trials} trials...")
+    xgb_params = optimize_xgboost(X, y, n_trials=n_trials)
 
-    # ── Construcción del pipeline ────────────────────────────
-    print("\n[4/5] Construyendo pipeline Stacking Ensemble...")
-    pipeline = build_pipeline(xgb_params)
+    # ── Selección de arquitectura por validación cruzada ────
+    # Se comparan dos arquitecturas con el MISMO split temporal:
+    #   a) XGBoost solo (más simple, mejor con pocos datos)
+    #   b) Stacking XGB + RF + Ridge (más potente con datos grandes)
+    # Gana la de menor RMSE. Comparar y elegir por CV es práctica
+    # estándar, y se reportan ambas.
+    print("\n[4/5] Selección de arquitectura por TimeSeriesSplit (5 folds)...")
+    candidatos = [
+        ('xgb',      build_pipeline_xgb(xgb_params)),
+        ('stacking', build_pipeline_stacking(xgb_params)),
+    ]
+    resultados = {}
+    for nombre, pipe in candidatos:
+        try:
+            m = evaluate_model(pipe, X, y)
+            resultados[nombre] = (m, pipe)
+            print(f"    {nombre:<9} RMSE {m['rmse_mean']:.4f} ± {m['rmse_std']:.4f} °C"
+                  f"  |  R² {m['r2_mean']:.4f}")
+        except Exception as e:
+            # joblib/loky falla de forma intermitente en Windows + Py3.14
+            # (resource_tracker). El candidato se descarta y se reporta.
+            print(f"    {nombre:<9} NO EVALUABLE en este entorno: {type(e).__name__}")
 
-    # ── Evaluación ───────────────────────────────────────────
-    print("\n[5/5] Evaluación con TimeSeriesSplit CV (5 folds)...")
-    metrics = evaluate_model(pipeline, X, y)
+    if not resultados:
+        raise RuntimeError("Ninguna arquitectura pudo evaluarse en este entorno.")
 
+    # Baseline de persistencia: predecir "t+1h = t" (X[:, 0] = temp_actual)
+    persist_rmse = float(np.sqrt(mean_squared_error(y, X[:, 0])))
+    print(f"    {'persist':<9} RMSE {persist_rmse:.4f} °C  (baseline naive)")
+
+    arch, (metrics, pipeline) = min(resultados.items(), key=lambda kv: kv[1][0]['rmse_mean'])
+    print(f"  ✓ Arquitectura elegida: {arch.upper()}")
+
+    if metrics['rmse_mean'] >= persist_rmse:
+        print("  ⚠ El modelo NO supera al baseline de persistencia.")
+        print("    Considerar: capturar más días de datos.")
+
+    # ── Evaluación final ────────────────────────────────────
+    print("\n[5/5] Métricas finales del modelo elegido:")
     print("\n  ┌──────────────────────────────┐")
     print(f"  │  RMSE : {metrics['rmse_mean']:.4f} ± {metrics['rmse_std']:.4f} °C  │")
     print(f"  │  MAE  : {metrics['mae_mean']:.4f} ± {metrics['mae_std']:.4f} °C  │")
     print(f"  │  R²   : {metrics['r2_mean']:.4f} ± {metrics['r2_std']:.4f}     │")
     print("  └──────────────────────────────┘")
+    print(f"  Baseline persistencia: RMSE {persist_rmse:.4f} °C")
 
     # ── Entrenamiento final con todos los datos ──────────────
     pipeline.fit(X, y)
 
     # ── Importancia real de features + metadatos ─────────────
-    importances = extract_feature_importances(pipeline, FEATURES_EXT)
+    importances = extract_feature_importances(pipeline, features_ext)
     print("\n  Importancia de features (%):")
     for f, v in sorted(importances.items(), key=lambda kv: -kv[1]):
         print(f"    {f:<18} {v:>5.1f}")
@@ -510,13 +628,19 @@ def main():
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump({
         'pipeline':            pipeline,
-        'features':            FEATURES_EXT,
+        'features':            features_ext,
         'metrics':             metrics,
         'n_samples':           int(len(df)),
         'feature_importances': importances,
         'xgb_params':          xgb_params,
+        'mode':                modo,
+        'arch':                arch,
+        'persist_rmse':        persist_rmse,
+        'hum_mean':            float(df['humedad'].mean()) if 'humedad' in df else None,
     }, OUTPUT_PATH)
     print(f"\n  ✓ Modelo guardado → {OUTPUT_PATH}")
+    print(f"  Modo: {modo.upper()} · Arquitectura: {arch} · "
+          f"{len(df):,} muestras · {len(features_ext)} features")
     print("\n  Listo. Ejecuta 'python api/main.py' para iniciar la API.\n")
 
 

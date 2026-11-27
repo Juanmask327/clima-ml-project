@@ -8,7 +8,7 @@ y con interfaz web en HTML + JavaScript puro.
 |---|---|
 | 🌐 **App pública (temporal)** | https://counters-capitol-ago-institution.trycloudflare.com |
 | 📦 **Repositorio** | https://github.com/Juanmask327/clima-ml-project |
-| 📊 **Métricas (CV temporal)** | R² 0.931 · RMSE 1.114 °C · MAE 0.842 °C |
+| 📊 **Métricas (CV temporal, datos reales)** | R² 0.826 · RMSE 2.147 °C · MAE 1.395 °C |
 | 🧪 **Tests** | 26/26 (`pytest backend/tests/`) |
 
 > 📋 **[ESTADO_Y_SEGUIMIENTO.md](ESTADO_Y_SEGUIMIENTO.md)** — registro de
@@ -47,73 +47,99 @@ clima_ml_project/
 
 ---
 
-## 📡 Conectar datos reales de una estación
+## 📡 Datos reales de estaciones (pipeline en uso)
 
-El pipeline de entrenamiento ya soporta datos reales. Para usarlos,
-coloca el CSV de tu estación en `backend/data/weather_data.csv` y
-re-entrena:
+El modelo se entrena con **datos reales capturados por estaciones
+Raspberry Pi con sensor BME280** (temperatura, humedad y presión —
+no miden viento, nubosidad ni UV).
+
+### Pipeline de datos
+
+```
+estacion_1.sql / estacion_2.sql / estacion4.sql / estacion3...csv
+        │  (dumps crudos: 432,829 registros de 3 estaciones, cada 5 s)
+        ▼
+backend/data/parse_stations.py
+        │  unifica y limpia → weather_data_real.csv
+        ▼
+backend/data/prepare_real_dataset.py
+        │  agrega por hora + target "temperatura de la siguiente hora"
+        ▼
+backend/data/weather_data.csv   (381 horas válidas, 17 días de muestreo)
+        │
+        ▼
+backend/model/train_model.py    (detecta el esquema real y entrena)
+```
+
+Reproducir todo el pipeline:
 
 ```bash
+python backend/data/parse_stations.py
+python backend/data/prepare_real_dataset.py
 python backend/model/train_model.py
 ```
 
-### Columnas requeridas
+### Esquema del dataset de entrenamiento
 
-| Columna interna | Significado | Unidad |
-|-----------------|-------------|--------|
-| `temp_actual`   | Temperatura observada | °C |
-| `humedad`       | Humedad relativa | % |
-| `presion`       | Presión atmosférica | hPa |
-| `viento`        | Velocidad del viento | km/h |
-| `nubosidad`     | Nubosidad | % |
-| `indice_uv`     | Índice UV | 0–12 |
-| `temp_pred`     | *(opcional)* Objetivo: temp de la siguiente hora | °C |
+| Columna | Significado | Unidad |
+|---------|-------------|--------|
+| `estacion`  | Identificador de estación | — |
+| `time`     | Hora de medición | hora local |
+| `temp_actual` | Temperatura media horaria | °C |
+| `humedad`  | Humedad relativa media | % |
+| `presion`  | Presión atmosférica media (~750 hPa, estación en altura) | hPa |
+| `temp_next`| **Target**: temperatura de la siguiente hora | °C |
 
-### El cargador se adapta solo
+### Features del modelo (7)
 
-`load_real_data()` en `backend/model/train_model.py` reconoce nombres
-de columna habituales de una estación, así que **no hace falta
-renombrar nada a mano**:
+| Feature | Tipo |
+|---------|------|
+| `temp_actual`, `humedad`, `presion` | medidas del sensor |
+| `hour_sin`, `hour_cos` | ciclo diario codificado (sin discontinuidad) |
+| `hum_effect`, `heat_index` | derivadas de humedad |
 
-| Interno | Alias aceptados |
-|---------|-----------------|
-| `temp_actual` | `temp`, `temperatura`, `temperature`, `temp_c`, `tamb` |
-| `humedad` | `hum`, `hr`, `humedad_relativa`, `relative_humidity`, `rh` |
-| `presion` | `pres`, `presion_atm`, `pressure`, `p_atm`, `bar` |
-| `viento` | `wind`, `vel_viento`, `wind_speed`, `vv`, `ws` |
-| `nubosidad` | `cloud`, `nub`, `cloudiness` |
-| `indice_uv` | `uv`, `uv_index`, `radiacion_uv` |
+> La hora del día es clave: el ciclo diario es el principal motor de
+> la temperatura horaria. La API la toma del navegador (hora local,
+> como registran las estaciones).
 
-Además:
+### Nota sobre la cobertura de muestreo
 
-- **Unidades**: si el CSV trae una columna `presion_unit` o `temp_unit`
-  (`kPa`, `Pa`, `bar`, `F`, `K`…), se convierte automáticamente a hPa y °C.
-- **Target**: si no viene `temp_pred`, se construye sola con `shift(-1)`
-  (temperatura de la siguiente hora).
-- **Limpieza**: descarta NaN, valores no numéricos y outliers fuera de
-  rangos físicamente plausibles (p. ej. humedad 250%).
-- **Orden temporal**: las filas no se reordenan nunca.
+Las estaciones no operaron de forma continua: los 432,829 registros
+se concentran en **17 días** entre mayo 2023 y diciembre 2024
+(rachas de muestreo intenso). El dataset horario resultante tiene
+381 filas con target contiguo. Si las estaciones capturan más
+días, basta re-ejecutar el pipeline para re-entrenar con más datos.
 
-Si falta alguna columna obligatoria, el entrenamiento se detiene con un
-mensaje que indica exactamente cuál falta y qué alias se aceptan.
+### Esquema sintético (legacy)
+
+`weather_data_synth.csv` conserva el dataset sintético original
+(6 variables + `temp_pred`). El pipeline lo sigue soportando para
+pruebas: `load_real_data()` acepta alias de columnas y unidades
+(`temp_unit`, `presion_unit`) automáticamente.
 
 ---
 
 ## Arquitectura del sistema
 
 ```
-  [ Sensores / Datos ]
-         │
-         ▼
-  [ train_model.py ]  ──►  clima_model.joblib
-         │
-         ▼
-  [ FastAPI (main.py) ]
-    POST /predict
+  [ Estaciones Raspberry Pi + BME280 ]   (temp, humedad, presión cada 5 s)
+          │
+          ▼
+  [ data/parse_stations.py ]  →  weather_data_real.csv
+          │
+          ▼
+  [ data/prepare_real_dataset.py ]  →  weather_data.csv (horario)
+          │
+          ▼
+  [ model/train_model.py ]  ──►  clima_model.joblib
+          │
+          ▼
+  [ FastAPI (api/main.py) ]
+    POST /predict    (temp, hum, pres, hora → temp de la siguiente hora)
     POST /forecast
     GET  /model/info
-         │
-         ▼
+          │
+          ▼
   [ Frontend (index.html) ]
     js/model.js  ──  fetch('/predict')
     js/ui.js     ──  DOM, Chart.js, tabs
@@ -242,36 +268,46 @@ Cloudflare, mostrando la URL al final. Requiere Docker Desktop y
 
 | Componente       | Algoritmo                              |
 |------------------|----------------------------------------|
-| Base learner 1   | XGBoost (GBR)                          |
-| Base learner 2   | Random Forest Regressor                |
-| Meta-learner     | Ridge Regression                       |
+| Modelo           | XGBoost (elegido por CV entre XGB solo, stacking XGB+RF+Ridge y baseline de persistencia) |
 | Optimización     | Bayesian Search (Optuna, 50 trials)    |
 | Preprocesamiento | StandardScaler                         |
 | Validación       | TimeSeriesSplit CV (5 folds, sin shuffle — respeta el orden temporal) |
+| Datos            | 381 horas reales de 3 estaciones BME280 |
 
-### Métricas obtenidas (TimeSeriesSplit CV, 5 folds)
+### Métricas del modelo REAL (estaciones BME280, TimeSeriesSplit 5 folds)
 
 | Métrica | Valor |
 |---------|------------|
-| R²      | 0.931 ± 0.045 |
-| RMSE    | 1.114 ± 0.359 °C |
-| MAE     | 0.842 ± 0.198 °C |
+| R²      | 0.826 ± 0.105 |
+| RMSE    | 2.147 ± 0.987 °C |
+| MAE     | 1.395 ± 0.673 °C |
 
-> **Nota metodológica:** los datos actuales son sintéticos (generados con
-> `generate_synthetic_data()`), por lo que `temp_pred` está derivado
-> principalmente de `temp_actual` — de ahí la alta importancia de esa
-> feature. Con datos reales de sensores las métricas deberán reevaluarse.
+**Comparativa de arquitecturas (misma validación temporal):**
 
-### Features del modelo (importancia real, promedio XGBoost + RF)
+| Arquitectura | RMSE | R² |
+|--------------|------|-----|
+| **XGBoost (elegido)** | **2.147** | **0.826** |
+| Stacking (XGB + RF + Ridge) | 2.622 | 0.715 |
+| Baseline persistencia (t+1h = t) | 2.154 | — |
+
+> El stacking sobreajusta con 381 horas de datos reales (el Random
+> Forest de 300 árboles es demasiado complejo), por lo que la
+> selección automática por CV elige XGBoost solo. Superar al
+> baseline de persistencia es el requisito mínimo de cualquier
+> modelo de temperatura horaria: aquí se cumple con margen estrecho
+> — capturar más días de datos debería ampliarlo.
+
+### Features del modelo (importancia real)
 
 | Feature          | Importancia |
 |------------------|-------------|
-| Temperatura actual | 81.3%      |
-| Índice de calor (heat_index) | 15.3% |
-| Índice UV          | 1.1%       |
-| Nubosidad          | 0.5%       |
-| Humedad relativa   | 0.4%       |
-| Velocidad viento   | 0.2%       |
+| Índice de calor (heat_index) | 40.1% |
+| Temperatura actual | 33.6%   |
+| Humedad relativa  | 11.0%   |
+| Efecto humedad     | 4.9%    |
+| Presión atmosférica | 4.3%   |
+| Ciclo diario (cos) | 4.3%    |
+| Ciclo diario (sin) | 1.9%    |
 
 *Los valores se sirven dinámicamente desde `GET /model/info`.*
 
@@ -294,47 +330,54 @@ POST http://localhost:8000/predict
 Content-Type: application/json
 
 {
-  "temp":  18.5,
-  "hum":   65.0,
-  "pres":  1013.0,
-  "wind":  12.0,
-  "cloud": 40.0,
-  "uv":    5.0
+  "temp":  19.0,
+  "hum":   68.0,
+  "pres":  752.0,
+  "hora":  14
 }
 ```
+
+> `temp`, `hum` y `pres` son las tres variables que mide el sensor
+> BME280. `hora` (0-23) es opcional: si no se envía se usa la hora
+> local. El esquema sintético anterior (`wind`, `cloud`, `uv`)
+> sigue aceptado como opcional para compatibilidad.
 
 ### Respuesta
 
 ```json
 {
-  "pred_temp": 21.3,
-  "rain_prob": 34.0,
-  "sensacion": 21.1,
-  "wind_pred": 9.9,
-  "confidence": 91.0,
-  "rmse": 1.11,
+  "pred_temp": 19.3,
+  "rain_prob": 45.0,
+  "sensacion": 19.3,
+  "confidence": 92.0,
+  "rmse": 2.15,
   "condition": "Despejado y soleado",
   "icon": "☀️",
+  "hora_usada": 14,
   "model_version": "1.0.0",
-  "timestamp": "2026-11-26T12:19:18"
+  "timestamp": "2026-11-27T03:33:41"
 }
 ```
 
-> `pred_temp` sale del modelo ML; `rmse` es el RMSE real de la
-> validación cruzada. `rain_prob`, `sensacion`, `wind_pred` y
-> `confidence` son **heurísticas auxiliares** (no las produce el modelo).
+> `pred_temp` sale del modelo ML (temperatura de la siguiente hora);
+> `rmse` es el RMSE real de la validación cruzada. `rain_prob`,
+> `sensacion` y `confidence` son **heurísticas auxiliares** (no las
+> produce el modelo); `hora_usada` es la hora con la que se evaluó
+> el ciclo diario.
 
 ---
 
 ## Roadmap (tesis doctoral)
 
-- [ ] Integración con sensores IoT reales (MQTT / InfluxDB)
+- [x] Integración con datos reales de estaciones (BME280, dumps MySQL)
+- [x] Dockerización del backend
+- [x] Despliegue en cloud (túnel público + configs Render/Fly/Railway)
+- [ ] Captura continua de datos (más días → mejor RMSE vs persistencia)
 - [ ] Modelo LSTM para series temporales largas
+- [ ] Ingesta en vivo de sensores (MQTT / InfluxDB)
 - [ ] Mapa de micro-zonas con predicción geoespacial
 - [ ] Dashboard en tiempo real (WebSocket)
 - [ ] Comparación de modelos: GBR vs LSTM vs Transformer
-- [ ] Dockerización del backend
-- [ ] Despliegue en cloud (AWS / GCP)
 
 ---
 

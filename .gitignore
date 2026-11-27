@@ -21,6 +21,11 @@ desktop.ini
 .pytest_cache/
 .ipynb_checkpoints/
 
+# ── Datasets regenerables (ver backend/data/parse_stations.py) ─
+# weather_data_real.csv se genera desde los dumps crudos de las
+# estaciones; los .sql/.csv originales SÍ se versionan (evidencia).
+backend/data/weather_data_real.csv
+
 # ── Editores ────────────────────────────────────────────────
 .vscode/
 .idea/

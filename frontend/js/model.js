@@ -17,13 +17,10 @@
 
 // ─── Constantes del modelo ──────────────────────────────────
 const MODEL_CONFIG = {
-  PRESSURE_REF:    1013,    // hPa referencia estándar
-  HUMIDITY_REF:    50,      // % referencia neutra
-  WIND_CHILL_THR:  20,      // km/h umbral para wind chill
-  WIND_CHILL_RATE: 0.15,    // factor de enfriamiento por viento
+  HUM_MEAN:        68.8,   // media de humedad de las estaciones reales
   CONF_MAX:        97,      // % confianza máxima
   CONF_MIN:        72,      // % confianza mínima
-  RMSE_BASE:       1.8,     // RMSE base estimado
+  RMSE_BASE:       1.0,     // RMSE base estimado (modo local)
 };
 
 // ─── API endpoint ───────────────────────────────────────────
@@ -37,72 +34,54 @@ const API_BASE_URL = window.location.origin;
 const API_ENABLED = /^https?:$/.test(window.location.protocol);
 
 // ============================================================
-//  MODELO GBR SIMULADO (prototipo)
+//  MODELO SIMULADO (prototipo, respaldo sin API)
 // ============================================================
 
 /**
- * Ejecuta la predicción climática con el modelo GBR simulado.
- * @param {Object} inp - Variables meteorológicas de entrada
- * @param {number} inp.temp    - Temperatura actual (°C)
- * @param {number} inp.hum     - Humedad relativa (%)
- * @param {number} inp.pres    - Presión atmosférica (hPa)
- * @param {number} inp.wind    - Velocidad del viento (km/h)
- * @param {number} inp.cloud   - Nubosidad (%)
- * @param {number} inp.uv      - Índice UV
+ * Estimación local de la temperatura de la siguiente hora a partir
+ * de las variables reales del sensor BME280 y la hora del día.
+ * @param {Object} inp - { temp, hum, pres, hora }
  * @returns {Object} Resultado de la predicción
  */
 function gbModel(inp) {
-  const { temp, hum, pres, wind, cloud, uv } = inp;
+  const { temp, hum, pres, hora } = inp;
+  const h = hora != null ? hora : new Date().getHours();
 
-  // ── Feature engineering (mismo preprocesamiento que Python) ─
-  const pressureDelta = (pres - MODEL_CONFIG.PRESSURE_REF) / 40;
-  const humEffect     = (hum  - MODEL_CONFIG.HUMIDITY_REF) / 100;
-  const cloudEffect   = cloud / 100;
-  const windChill     = wind > MODEL_CONFIG.WIND_CHILL_THR
-    ? -(wind - MODEL_CONFIG.WIND_CHILL_THR) * MODEL_CONFIG.WIND_CHILL_RATE
-    : 0;
+  // Ciclo diario: enfría de madrugada, calienta tras mediodía
+  const ciclo = Math.sin((h - 9) / 24 * 2 * Math.PI) * 1.2;
 
-  // ── Predicción temperatura (regresión GBR) ───────────────
-  const predTemp = round1(
-    temp + pressureDelta * 2 - humEffect * 1.5 - cloudEffect * 2 + windChill
-  );
+  // La presión alta tiende a estabilizar (menos cambio)
+  const estabilidad = (pres - 752) / 50 * 0.3;
 
-  // ── Probabilidad de lluvia (clasificador auxiliar) ───────
-  const rainProb = clamp(
-    Math.round(hum * 0.6 + cloud * 0.4 - (pres - 970) * 0.3), 0, 100
-  );
+  const predTemp = round1(temp + ciclo * 0.5 + estabilidad);
 
-  // ── Variables derivadas ──────────────────────────────────
-  const sensacion = round1(predTemp - windChill * 0.5 - humEffect * 2);
-  const windPred  = Math.round(wind * (1 + (MODEL_CONFIG.PRESSURE_REF - pres) / 300));
+  // Probabilidad de lluvia: la humedad es el principal proxy
+  const rainProb = clamp(Math.round((hum - 40) * 1.6), 0, 100);
 
-  // ── Métricas de confianza ────────────────────────────────
+  // Sensación térmica: humedad alta aumenta la percepción de calor
+  const humEffect = (hum - MODEL_CONFIG.HUM_MEAN) / 100;
+  const sensacion = round1(predTemp - humEffect * 2);
+
+  // Confianza heurística
   const conf = clamp(
-    Math.round(94 - Math.abs(pressureDelta) * 5 - cloudEffect * 8),
-    MODEL_CONFIG.CONF_MIN,
-    MODEL_CONFIG.CONF_MAX
+    Math.round(94 - Math.abs(hum - 50) / 8), MODEL_CONFIG.CONF_MIN, MODEL_CONFIG.CONF_MAX
   );
-  const rmse = round2(MODEL_CONFIG.RMSE_BASE - conf / 100);
+  const rmse = round2(MODEL_CONFIG.RMSE_BASE);
 
-  // ── Clasificación de condición climática ─────────────────
-  const { icon, desc } = classifyWeather(predTemp, rainProb, cloud, wind);
+  const { icon, desc } = classifyWeather(predTemp, rainProb);
 
-  return { predTemp, rainProb, sensacion, windPred, conf, rmse, icon, desc };
+  return { predTemp, rainProb, sensacion, conf, rmse, icon, desc, horaUsada: h };
 }
 
 /**
  * Clasifica la condición climática resultante.
  * @param {number} temp     - Temperatura predicha (°C)
  * @param {number} rainProb - Probabilidad de lluvia (%)
- * @param {number} cloud    - Nubosidad (%)
- * @param {number} wind     - Velocidad del viento (km/h)
  * @returns {{ icon: string, desc: string }}
  */
-function classifyWeather(temp, rainProb, cloud, wind) {
+function classifyWeather(temp, rainProb) {
   if (rainProb > 70)  return { icon: '🌧️', desc: 'Lluvia probable' };
   if (rainProb > 45)  return { icon: '⛅', desc: 'Parcialmente nublado con posible lluvia' };
-  if (cloud > 60)     return { icon: '☁️', desc: 'Nublado' };
-  if (wind > 40)      return { icon: '💨', desc: 'Vientoso' };
   if (temp > 32)      return { icon: '🌡️', desc: 'Caluroso y seco' };
   if (temp < 5)       return { icon: '🌨️', desc: 'Frío · posible helada' };
   return              { icon: '☀️', desc: 'Despejado y soleado' };
@@ -160,11 +139,11 @@ async function fetchPrediction(inp) {
     predTemp:  d.pred_temp,
     rainProb:  d.rain_prob,
     sensacion: d.sensacion,
-    windPred:  d.wind_pred,
     conf:      d.confidence,
     rmse:      d.rmse,
     icon:      d.icon,
     desc:      d.condition,
+    horaUsada: d.hora_usada,
     source:    'api'
   };
 }
@@ -216,10 +195,9 @@ function generateForecast(inp) {
     const variation = Math.sin(i * 0.8) * 3 + Math.cos(i * 1.2) * 2;
     const hi = round1(inp.temp + variation);
     const lo = round1(hi - 6 - Math.random() * 3);
-    // Probabilidad de lluvia estimada (misma heurística que la API)
+    // Probabilidad de lluvia estimada desde la humedad (heurística)
     const rainProb = clamp(
-      Math.round(inp.hum * 0.6 + inp.cloud * 0.4 - (inp.pres - 970) * 0.3 - i * 2),
-      0, 100
+      Math.round((inp.hum - 40) * 1.6 - i * 2), 0, 100
     );
     return { day, icon: icons[i], hi, lo, rainProb };
   });
