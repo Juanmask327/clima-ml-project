@@ -297,6 +297,20 @@ Cloudflare, mostrando la URL al final. Requiere Docker Desktop y
 > modelo de temperatura horaria: aquí se cumple con margen estrecho
 > — capturar más días de datos debería ampliarlo.
 
+### Notas de sensibilidad (para la discusión de la tesis)
+
+Barrido del modelo entrenado (temp=19, hum=68):
+
+- **Hora del día:** respuesta suave y físicamente coherente —
+  ~20.1°C de madrugada, calentamiento matutino, pico ~21.9°C a las
+  14:00, descenso nocturno. El ciclo diario se aprendió correctamente.
+- **Presión:** existe un **salto de umbral en ~751 hPa** (19.3 →
+  21.9°C entre 750 y 752 hPa). Los árboles usan la presión como
+  indicador de régimen (días/estaciones distintos tienen medias de
+  presión distintas), no como driver físico continuo. Es una
+  limitación conocida de modelos de árbol con pocos datos; más días
+  de muestreo suavizarían la respuesta.
+
 ### Features del modelo (importancia real)
 
 | Feature          | Importancia |
