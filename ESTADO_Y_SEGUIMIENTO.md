@@ -62,6 +62,18 @@ MAE  : 1.3949 ± 0.6729 °C
 > estrecho por la cobertura limitada (17 días de muestreo en 19
 > meses). Capturar más días debería ampliarlo.
 
+### Notas de sensibilidad (barridos del modelo entrenado)
+
+- **Hora del día:** respuesta suave y físicamente coherente —
+  ~20.1 °C de madrugada, pico ~21.9 °C a las 14:00, descenso
+  nocturno. El ciclo diario se aprendió correctamente (los features
+  `hour_sin`/`hour_cos` funcionan como se esperaba).
+- **Presión:** salto de umbral en ~751 hPa (19.3 → 21.9 °C entre 750
+  y 752 hPa). Con 381 horas, los árboles usan la presión como
+  indicador de régimen (días/estaciones distintas), no como driver
+  físico continuo. Limitación conocida de árboles con pocos datos;
+  documentada para la discusión de la tesis.
+
 ---
 
 ## 3. Bugs encontrados y corregidos
@@ -124,6 +136,60 @@ a que el canvas tenga tamaño real (`whenCanvasReady()`).
 | 18 | Fahrenheit: solo aplicaba el factor, faltaba el offset (−17.78) | conversión con `(factor, offset)` |
 | 19 | `shift(-1)` aplicado **antes** de limpiar → desalineaba X e y | limpiar primero, luego shift |
 | 20 | `pd.to_numeric` fallaba con dtype `float64` | `.astype('float64')` explícito |
+
+### 🟣 Bugs e incidentes de la integración de datos reales (27/11)
+
+| # | Bug / Incidente | Fix / Decisión |
+|---|-----------------|----------------|
+| 21 | `prepare_real_dataset.py`: usé `groupby.diff(-1)` comparado contra `+1h` — matemáticamente invertido → **0 filas con target válido** | `hora.shift(-1) - hora` y comparar con `+1h`; los tests lo cubren |
+| 22 | Mis tests de `test_data_loading.py` asumían que el CSV traía `temp_pred` → conteos de filas incorrectos (3 fallos falsos) | tests corregidos: el target por shift descarta la última fila |
+| 23 | `joblib/loky` crashea de forma intermitente en Windows + Python 3.14 (`resource_tracker: FileNotFoundError`) al evaluar el stacking | try/except alrededor de la evaluación de cada arquitectura; el candidato fallido se descarta y se reporta |
+| 24 | El shell del agente mató procesos al expirar su timeout (uvicorn y el primer entrenamiento murieron así) | lanzar con timeout desactivado en procesos largos |
+| 25 | **El disco H: se desconectó a mitad del entrenamiento** (USB) → FileNotFoundError en loky + archivos inaccesibles; todo el trabajo no commiteado quedó atrapado en el disco | el usuario reconectó el disco y NO se perdió nada; lección: commitear más a menudo y revisar el cable |
+| 26 | Esquema de presión viejo rechazaba los ~750 hPa reales (rango 970–1050 pensado para nivel del mar) | rango ampliado a 600–1100 hPa; slider del frontend 700–800 |
+| 27 | El stacking (XGB + RF 300 árboles + Ridge) **sobreajusta** con 381 horas: peor que el baseline naive | selección automática de arquitectura por CV: gana XGBoost solo (RMSE 2.147) |
+
+---
+
+## 3b. Registro de avances por sesión
+
+### Sesión del 26/11/2026
+1. ✅ Revisión completa del proyecto + informe de hallazgos
+2. ✅ Entorno `.venv` + dependencias pineadas (Py3.14)
+3. ✅ Fixes ML: TimeSeriesSplit, RMSE real, importancias, paralelismo
+4. ✅ Frontend conectado a la API con fallback + badge de estado
+5. ✅ 9 tests pytest
+6. ✅ Entrenamiento (sintético): R² 0.9309, RMSE 1.1138
+7. ✅ Limpieza de repo + `.gitignore` + primer commit del trabajo
+
+### Sesión del 26-27/11 (noche)
+1. ✅ Despliegue: `render.yaml`, `fly.toml`, `Procfile`, `Dockerfile`
+2. ✅ Fix crítico `API_BASE_URL` → `window.location.origin`
+3. ✅ Fix crítico HTML malformado (pestañas anidadas, canvas 0×0)
+4. ✅ Repo GitHub creado + CI/CD (tests + GHCR)
+5. ✅ Túnel público verificado end-to-end en navegador
+6. ✅ `start_deploy.ps1` + documento de seguimiento
+
+### Sesión del 27/11/2026 — **INTEGRACIÓN DE DATOS REALES** 🎯
+1. ✅ Parser de los 4 dumps crudos de estaciones (3 SQL phpMyAdmin +
+   1 CSV de una línea): **432,829 registros** de 3 Raspberry Pi
+2. ✅ Hallazgo: sensor BME280 mide solo temp/hum/presión → el modelo
+   se reestructura a 7 features (3 medidas + ciclo horario + 2 derivadas)
+3. ✅ Dataset horario: 381 filas con target contiguo (17 días de muestreo)
+4. ✅ Hallazgo: presión ~750 hPa → estación en altura (~2.500 m)
+5. ✅ `train_model.py`: esquema dual (real/sintético) + selección
+   automática de arquitectura por CV (XGB vs stacking)
+6. ✅ **Resultado: XGBoost RMSE 2.1466, R² 0.8262 — supera el baseline
+   de persistencia (2.1537); el stacking sobreajusta (2.6215)**
+7. ✅ API: input `temp/hum/pres + hora opcional` (hora del navegador),
+   `hora_usada` en la respuesta, `mode`/`arch`/`persist_rmse` en `/model/info`
+8. ✅ Frontend: 3 sliders reales, métricas/importancias reales
+9. ✅ 30/30 tests (16 API + 14 cargador legacy)
+10. ✅ Docker reconstruido con modelo real (0.7 MB vs 10 MB)
+11. ✅ Análisis de sensibilidad: ciclo horario suave y físico;
+    umbral de presión en ~751 hPa (artefacto de split de árbol)
+12. ⚠️ Incidente: disco H: se desconectó a mitad del entrenamiento
+    (sin pérdida de datos, reconectado por el usuario)
 
 ---
 
@@ -204,13 +270,19 @@ python backend/model/train_model.py          # entrena (detecta modo real)
 
 ### URL pública actual
 
-```
-https://counters-capitol-ago-institution.trycloudflare.com
+Los túneles rápidos de Cloudflare **generan una URL nueva en cada
+sesión** (y expiran con reinicios/desconexiones del equipo). La última
+fue `modelling-buffalo-adapter-favors.trycloudflare.com`, pero NO hay
+que memorizarla:
+
+```powershell
+.\start_deploy.ps1   # desde la raíz del proyecto: imprime la URL nueva
 ```
 
 > ⚠️ **Temporal.** Túnel de Cloudflare sin cuenta: funciona mientras el
 > equipo esté encendido, sin garantía de uptime. Para URL fija hay que
-> iniciar sesión en Render / Railway / Fly.io.
+> iniciar sesión en Render / Railway / Fly.io (pendiente, requiere tu
+> login).
 
 ---
 
@@ -254,9 +326,11 @@ clima_ml_project/
 ## 8. Comandos útiles
 
 ```bash
-# ── Entrenar ───────────────────────────────────────────────
+# ── Pipeline completo de datos reales (desde la raíz) ───────
 $env:PYTHONUTF8='1'
-.venv\Scripts\python.exe -u backend\model\train_model.py      # ~10-12 min
+.venv\Scripts\python.exe backend\data\parse_stations.py         # crudos → weather_data_real.csv
+.venv\Scripts\python.exe backend\data\prepare_real_dataset.py    # → dataset horario
+.venv\Scripts\python.exe -u backend\model\train_model.py         # entrena (~15 min, modo real)
 
 # ── API (desde backend/) ───────────────────────────────────
 ..\.venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8000
@@ -269,7 +343,10 @@ $env:PYTHONUTF8='1'
 
 # ── Docker ─────────────────────────────────────────────────
 docker build -t clima-ml .
-docker run -d --name clima-ml-test -p 8099:8000 clima-ml
+docker rm -f clima-ml-test; docker run -d --name clima-ml-test -p 8099:8000 clima-ml
+
+# ── Despliegue local + túnel público ────────────────────────
+.\start_deploy.ps1
 
 # ── Git ────────────────────────────────────────────────────
 git add -A && git commit -m "..." && git push origin master
@@ -277,6 +354,9 @@ git add -A && git commit -m "..." && git push origin master
 
 > ⚠️ **Al hacer `curl` en PowerShell** el JSON con comillas se rompe:
 > usa `-d '{\"temp\":22,...}'` (comillas escapadas con `\`).
+>
+> ⚠️ **Procesos largos** (entrenamiento, uvicorn en background): no
+> ponerles timeout corto o el wrapper los mata a mitad.
 
 ---
 
@@ -317,6 +397,10 @@ git add -A && git commit -m "..." && git push origin master
 ## 10. Historial de commits
 
 ```
+905bf69  Notas de sensibilidad del modelo real (ciclo horario vs umbral de presion)
+93da56a  Modelo entrenado con DATOS REALES de las estaciones BME280
+ed68749  Nueva URL del tunel tras reinicio del equipo
+9c8a280  Documento de estado y seguimiento para continuar el trabajo
 6bdbf3c  Pipeline de datos reales: cargador flexible para CSV de estaciones
 3f23c76  Fix GHCR: la imagen debe ir en minusculas
 291a5e9  Script de despliegue local + documentacion de la URL publica
@@ -327,16 +411,30 @@ git add -A && git commit -m "..." && git push origin master
 11f9b6c  El primer commit del sitio web, predicción del clima en micro-zonas
 ```
 
----
-
-## 11. Cómo retomar
-
-1. `git pull` en `H:\doctorado\estudiar\trabajo_2025_2026\clima_ml_project`
-2. Levantar la API: `..\.venv\Scripts\python.exe -m uvicorn api.main:app` (desde `backend/`)
-3. Abrir http://localhost:8000/
-4. Si el túnel no está vivo:
-   `.\start_deploy.ps1` (desde la raíz del proyecto)
+**Hitos:**
+- `11f9b6c` → proyecto original (sintético, backend+frontend sueltos)
+- `8a3fd59` → desplegable en la nube (fix `API_BASE_URL`)
+- `5a5545c` → las 3 pestañas funcionan (fix HTML)
+- `93da56a` → **el modelo aprende de tus estaciones reales**
 
 ---
 
-*Documento generado el 26/11/2026. Actualizar al cerrar cada bloque de trabajo.*
+## 11. Cómo retomar mañana
+
+1. **Verificar el disco H:** — se desconectó una vez; si el proyecto
+   no aparece, revisa el cable/USB antes que nada
+2. `git pull` en `H:\doctorado\estudiar\trabajo_2025_2026\clima_ml_project`
+3. Levantar la API: `..\.venv\Scripts\python.exe -m uvicorn api.main:app`
+   (desde `backend/`) — sin timeout en el wrapper
+4. Abrir http://localhost:8000/ — debe decir "Modelo ML en vivo"
+5. Si quieres URL pública: `.\start_deploy.ps1` (desde la raíz)
+6. Los pendientes están en la sección 9; el estado del modelo en la 2
+
+**Sesión sugerida (bloques cortos):**
+- ¿URL permanente? → login en Render (10 min con el botón del readme)
+- ¿Más datos de estaciones? → 3 comandos del pipeline (sección 8)
+- ¿Avance de tesis? → SHAP o notebook de EDA sobre los datos reales
+
+---
+
+*Documento actualizado el 27/11/2026. Actualizar al cerrar cada bloque de trabajo.*
